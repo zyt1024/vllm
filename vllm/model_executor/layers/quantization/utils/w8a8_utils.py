@@ -213,6 +213,7 @@ def apply_int8_linear(
     bias: Optional[torch.Tensor] = None,
 ):
     if current_platform.is_tpu():
+        import torch_xla.experimental.xla_quantized_matmul
         return torch.ops.xla.quantized_matmul(input,
                                               weight.t(),
                                               weight_scale.squeeze(-1).to(
