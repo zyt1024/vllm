@@ -11,13 +11,15 @@ import torch_xla.core.xla_model as xm
 import torch_xla.runtime as xr
 
 from vllm.attention import AttentionMetadata, get_attn_backend
-from vllm.compilation.wrapper import TorchCompileWrapperWithCustomDispatcher
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, ModelConfig,
                          ParallelConfig, SchedulerConfig)
+from vllm.inputs import INPUT_REGISTRY, InputRegistry
 from vllm.logger import init_logger
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.model_executor.model_loader import get_model
 from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.multimodal import (MULTIMODAL_REGISTRY, BatchedTensorInputs,
+                             MultiModalInputs, MultiModalRegistry)
 from vllm.sequence import (CompletionSequenceGroupOutput, IntermediateTensors,
                            Logprob, SequenceGroupMetadata, SequenceOutput)
 from vllm.worker.model_runner_base import (
@@ -51,6 +53,7 @@ class ModelInputForTPU(ModelRunnerInputBase):
     num_samples: int
     best_of: List[int]
     seq_groups: List[List[int]]
+    multi_modal_kwargs: List[BatchedTensorInputs]
     is_first_multi_step: bool = True
     is_last_step: bool = True
     virtual_engine: int = 0
@@ -67,6 +70,7 @@ class ModelInputForTPU(ModelRunnerInputBase):
             "num_samples": self.num_samples,
             "best_of": self.best_of,
             "seq_groups": self.seq_groups,
+            "multi_modal_kwargs": self.multi_modal_kwargs,
             "is_first_multi_step": self.is_first_multi_step,
             "is_last_step": self.is_last_step,
             "virtual_engine": self.virtual_engine,
@@ -97,6 +101,8 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
         cache_config: CacheConfig,
         load_config: LoadConfig,
         is_driver_worker: bool = False,
+        input_registry: InputRegistry = INPUT_REGISTRY,
+        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
     ):
         self.model_config = model_config
         self.parallel_config = parallel_config
@@ -123,6 +129,13 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             False,
         )
         self.cached_step_outputs: List[torch.Tensor] = []
+
+        # Multi-modal data support
+        self.input_registry = input_registry
+        self.mm_registry = mm_registry
+        self.multi_modal_input_mapper = mm_registry.create_input_mapper(
+            model_config)
+        self.mm_registry.init_mm_limits_per_prompt(self.model_config)
 
     def load_model(self) -> None:
         self.device = self.device_config.device
@@ -152,7 +165,11 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             )
         model = model.eval()
         xm.wait_device_ops()
-        self.model = ModelWrapper(model)
+        model = ModelWrapper(model)
+        self.model = torch.compile(model,
+                                   backend="openxla",
+                                   fullgraph=True,
+                                   dynamic=False)
 
     def _dummy_run(
         self,
@@ -478,6 +495,19 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
         p = torch.tensor(p, dtype=torch.float32, device="cpu")
         return t, p, best_of
 
+    def _prepare_multi_modal(
+        self,
+        seg_group_metadata_list: List[SequenceGroupMetadata],
+    ) -> List[BatchedTensorInputs]:
+        multi_modal_inputs_list = []
+        for seq_group_metadata in seg_group_metadata_list:
+            mm_data = seq_group_metadata.multi_modal_data
+            if not mm_data:
+                continue
+            mm_input = self.multi_modal_input_mapper(mm_data)
+            multi_modal_inputs_list.append(MultiModalInputs.batch([mm_input]))
+        return multi_modal_inputs_list
+
     def prepare_model_input(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -504,9 +534,10 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             list(metadata.seq_data.keys())
             for metadata in seq_group_metadata_list
         ]
+        multi_modal_kwargs = self._prepare_multi_modal(seq_group_metadata_list)
         return ModelInputForTPU(input_tokens, input_positions, attn_metadata,
                                 input_lens, t, p, num_samples, best_of,
-                                seq_groups)
+                                seq_groups, multi_modal_kwargs)
 
     def make_model_input_from_broadcasted_tensor_dict(
             self, tensor_dict: Dict[str, Any]) -> ModelInputForTPU:
@@ -565,6 +596,11 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             start_idx = 0
             next_token_ids = []
             for i in range(batch_size):
+                if model_input.multi_modal_kwargs:
+                    multi_modal_inputs = MultiModalInputs.as_kwargs(
+                        model_input.multi_modal_kwargs[i], device=self.device)
+                else:
+                    multi_modal_inputs = {}
                 # Get the actual prefill_len.
                 prefill_len = model_input.input_lens[i:i + 1].item()
                 prefill_len = _get_padded_prefill_len(prefill_len)
@@ -590,6 +626,7 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
                                               p,
                                               model_input.num_samples,
                                               kv_caches,
+                                              **multi_modal_inputs,
                                               is_prompt=True)
                 next_token_ids.append(output_token_ids[0])
                 start_idx = end_idx
@@ -621,6 +658,7 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
                     CompletionSequenceGroupOutput(seq_outputs, None))
             return [SamplerOutput(sampler_outputs)]
         else:
+            assert not model_input.multi_modal_kwargs
             token_ids = model_input.token_ids.to(self.device)
             position_ids = model_input.position_ids.to(self.device)
             attn_metadata = model_input.attn_metadata
@@ -678,32 +716,11 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             return [sampler_output]
 
 
-class ModelWrapper(TorchCompileWrapperWithCustomDispatcher):
+class ModelWrapper(nn.Module):
 
     def __init__(self, model: nn.Module):
+        super().__init__()
         self.model = model
-        compiled_callable = torch.compile(self.forward,
-                                          backend="openxla",
-                                          fullgraph=True,
-                                          dynamic=False)
-        super().__init__(compiled_callable)
-
-    def __call__(self, *args, is_prompt: bool, **kwargs):
-        if len(self.compiled_codes) < 3 or not self.use_custom_dispatcher:
-            # not fully compiled yet, or not using the custom dispatcher,
-            # let PyTorch handle it
-            return self.compiled_callable(*args, **kwargs)
-        # the 3 compiled codes are:
-        # 0: for profiling
-        # 1: for prompt
-        # 2: for decode
-        # dispatch to the compiled code directly, skip PyTorch
-        if is_prompt:
-            with self.dispatch_to_code(1):
-                return self.forward(*args, **kwargs)
-        else:
-            with self.dispatch_to_code(2):
-                return self.forward(*args, **kwargs)
 
     def forward(
         self,
@@ -715,6 +732,7 @@ class ModelWrapper(TorchCompileWrapperWithCustomDispatcher):
         p: torch.Tensor,
         num_samples: int,
         kv_caches: List[Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]],
+        **kwargs,
     ) -> torch.Tensor:
         """Executes the forward pass of the model and samples the next token.
 
@@ -770,6 +788,7 @@ class ModelWrapper(TorchCompileWrapperWithCustomDispatcher):
             position_ids,
             kv_caches,
             attn_metadata,
+            **kwargs,
         )
         hidden_states = hidden_states.flatten(0, 1)
         logits = self.model.compute_logits(hidden_states, sampling_metadata)

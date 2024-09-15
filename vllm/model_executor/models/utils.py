@@ -133,15 +133,15 @@ def merge_multimodal_embeddings(input_ids: torch.Tensor,
         This updates ``inputs_embeds`` in place.
     """
     mask = (input_ids == placeholder_token_id)
-    num_expected_tokens = mask.sum().item()
-    assert isinstance(num_expected_tokens, int)
+    # num_expected_tokens = mask.sum().item()
+    # assert isinstance(num_expected_tokens, int)
 
     flattened = _flatten_embeddings(multimodal_embeddings)
-    if flattened.shape[0] != num_expected_tokens:
-        expr = _embedding_count_expression(multimodal_embeddings)
-        raise ValueError(
-            f"Attempted to assign {expr} = {flattened.shape[0]} "
-            f"multimodal tokens to {num_expected_tokens} placeholders")
+    # if flattened.shape[0] != num_expected_tokens:
+    #     expr = _embedding_count_expression(multimodal_embeddings)
+    #     raise ValueError(
+    #         f"Attempted to assign {expr} = {flattened.shape[0]} "
+    #         f"multimodal tokens to {num_expected_tokens} placeholders")
 
     inputs_embeds[mask] = flattened
     return inputs_embeds

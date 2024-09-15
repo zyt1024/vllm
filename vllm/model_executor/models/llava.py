@@ -247,11 +247,13 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal):
                 raise ValueError("Incorrect type of pixel values. "
                                  f"Got type: {type(pixel_values)}")
 
-            return LlavaImagePixelInputs(
-                type="pixel_values",
-                data=self._validate_pixel_values(
+            return {
+                "type":
+                "pixel_values",
+                "data":
+                self._validate_pixel_values(
                     flatten_bn(pixel_values, concat=True)),
-            )
+            }
 
         if image_embeds is not None:
             if not isinstance(image_embeds, (torch.Tensor, list)):
