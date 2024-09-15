@@ -1,7 +1,5 @@
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import torch
-
 from vllm.executor.executor_base import ExecutorAsyncBase, ExecutorBase
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -22,11 +20,6 @@ class TPUExecutor(ExecutorBase):
             "Chunked prefill is not yet supported for TPU backend")
         assert not self.speculative_config, (
             "Speculative decoding is not yet supported for TPU backend")
-        if self.model_config.dtype in (torch.float16, torch.float32):
-            logger.warning(
-                "The TPU backend currently does not support %s. "
-                "Using bfloat16 instead.", self.model_config.dtype)
-            self.model_config.dtype = torch.bfloat16
 
         # Instantiate the worker and load the model to the device.
         self.driver_worker = self._create_worker()

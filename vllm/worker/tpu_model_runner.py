@@ -256,15 +256,8 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             torch._dynamo.mark_dynamic(t, 0)
             torch._dynamo.mark_dynamic(p, 0)
         # Dummy run.
-        self.model(token_ids,
-                   position_ids,
-                   attn_metadata,
-                   input_lens,
-                   t,
-                   p,
-                   num_samples,
-                   kv_caches,
-                   is_prompt=is_prompt)
+        self.model(token_ids, position_ids, attn_metadata, input_lens, t, p,
+                   num_samples, kv_caches)
 
     def warmup_model(
         self,
@@ -618,16 +611,10 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
                 input_lens = model_input.input_lens[i:i + 1].to(self.device)
                 t = model_input.t[i:i + 1].to(self.device)
                 p = model_input.p[i:i + 1].to(self.device)
-                output_token_ids = self.model(token_ids,
-                                              position_ids,
-                                              attn_metadata,
-                                              input_lens,
-                                              t,
-                                              p,
+                output_token_ids = self.model(token_ids, position_ids,
+                                              attn_metadata, input_lens, t, p,
                                               model_input.num_samples,
-                                              kv_caches,
-                                              **multi_modal_inputs,
-                                              is_prompt=True)
+                                              kv_caches, **multi_modal_inputs)
                 next_token_ids.append(output_token_ids[0])
                 start_idx = end_idx
 
@@ -673,15 +660,10 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             input_lens = model_input.input_lens.to(self.device)
             for i in range(num_steps):
                 slot_mapping = attn_metadata.slot_mapping
-                output_token_ids = self.model(token_ids,
-                                              position_ids,
-                                              attn_metadata,
-                                              input_lens,
-                                              t,
-                                              p,
+                output_token_ids = self.model(token_ids, position_ids,
+                                              attn_metadata, input_lens, t, p,
                                               model_input.num_samples,
-                                              kv_caches,
-                                              is_prompt=False)
+                                              kv_caches)
                 self.cached_step_outputs.append(output_token_ids)
 
                 if i < num_steps - 1:

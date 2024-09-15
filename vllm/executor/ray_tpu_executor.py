@@ -37,6 +37,11 @@ class RayTPUExecutor(TPUExecutor):
         super().__init__(*args, **kwargs)
 
     def _init_executor(self) -> None:
+        assert not self.scheduler_config.chunked_prefill_enabled, (
+            "Chunked prefill is not yet supported for TPU backend")
+        assert not self.speculative_config, (
+            "Speculative decoding is not yet supported for TPU backend")
+
         assert self.parallel_config.distributed_executor_backend == "ray"
         placement_group = self.parallel_config.placement_group
 

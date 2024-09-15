@@ -1642,6 +1642,13 @@ def _get_and_verify_dtype(
     else:
         raise ValueError(f"Unknown dtype: {dtype}")
 
+    if (current_platform.is_tpu()
+            and torch_dtype in (torch.float16, torch.float32)):
+        logger.warning(
+            "The TPU backend currently does not support %s. "
+            "Using bfloat16 instead.", torch_dtype)
+        torch_dtype = torch.bfloat16
+
     # Verify the dtype.
     if torch_dtype != config_dtype:
         if torch_dtype == torch.float32:
