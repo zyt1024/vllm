@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import re
 import signal
+import socket
 import tempfile
 from argparse import Namespace
 from contextlib import asynccontextmanager
@@ -515,6 +516,9 @@ async def run_server(args, **uvicorn_kwargs) -> None:
     logger.info("vLLM API server version %s", VLLM_VERSION)
     logger.info("args: %s", args)
 
+    temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    temp_socket.bind(("", args.port))
+
     def signal_handler(*_) -> None:
         # Interrupt server on sigterm while initializing
         raise KeyboardInterrupt("terminated")
@@ -530,6 +534,8 @@ async def run_server(args, **uvicorn_kwargs) -> None:
 
         model_config = await engine_client.get_model_config()
         init_app_state(engine_client, model_config, app.state, args)
+
+        temp_socket.close()
 
         shutdown_task = await serve_http(
             app,
