@@ -49,6 +49,7 @@ try:
 except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
+from datasets import load_dataset
 
 @dataclass
 class BenchmarkMetrics:
@@ -78,7 +79,42 @@ class BenchmarkMetrics:
     std_e2el_ms: float
     percentiles_e2el_ms: List[Tuple[float, float]]
 
+def sample_cnn_dailymail_requests(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+    fixed_output_len: Optional[int] = None,
+) -> List[Tuple[str, int, int]]:
+    if fixed_output_len is not None and fixed_output_len < 4:
+        raise ValueError("output_len too small")
+    dataset = load_dataset("cnn_dailymail", "3.0.0", split="test")
+    question = "Summarize the above article. Try to directly reuse the sentences in the article when possible."
+    dataset = [(data["article"] + question,
+                data["highlights"]) for data in dataset]
+    # Shuffle the dataset.
+    random.shuffle(dataset)
+    
+    # Filter out sequences that are too long
+    filtered_dataset: List[Tuple[str, int, int]] = []
+    for i in range(len(dataset)):
+        if len(filtered_dataset) == num_requests:
+            break
 
+        # Tokenize the prompts and completions.
+        prompt = dataset[i][0]
+        prompt_token_ids = tokenizer(prompt).input_ids
+        completion = dataset[i][1]
+        completion_token_ids = tokenizer(completion).input_ids
+        prompt_len = len(prompt_token_ids)
+        output_len = len(completion_token_ids
+                         ) if fixed_output_len is None else fixed_output_len
+        if prompt_len > 1024 * 128 or prompt_len + output_len > 1024 * 128:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append((prompt, prompt_len, output_len))
+
+    return filtered_dataset
+    
 def sample_sharegpt_requests(
     dataset_path: str,
     num_requests: int,
@@ -584,7 +620,13 @@ def main(args: argparse.Namespace):
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
         )
-
+    elif args.dataset_name == "cnn_dailymail":
+        input_requests = sample_cnn_dailymail_requests(
+            dataset_path=args.dataset_path,
+            num_requests=args.num_prompts,
+            tokenizer=tokenizer,
+            fixed_output_len=args.random_output_len,
+        )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
 
@@ -685,7 +727,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "sonnet", "random"],
+        choices=["sharegpt", "sonnet", "random", "cnn_dailymail"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument("--dataset-path",
@@ -842,7 +884,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--percentile-metrics",
         type=str,
-        default="ttft,tpot,itl",
+        default="ttft,tpot,itl,e2el",
         help="Comma-seperated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
         "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". "
