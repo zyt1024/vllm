@@ -22,6 +22,7 @@ On the client side, run:
         --endpoint /generate_stream
     to the end of the command above.
 """
+
 import argparse
 import asyncio
 import base64
@@ -36,8 +37,11 @@ from datetime import datetime
 from typing import Any, AsyncGenerator, Collection, Dict, List, Optional, Tuple
 
 import numpy as np
-from backend_request_func import (ASYNC_REQUEST_FUNCS, RequestFuncInput,
-                                  RequestFuncOutput)
+from backend_request_func import (
+    ASYNC_REQUEST_FUNCS,
+    RequestFuncInput,
+    RequestFuncOutput,
+)
 from datasets import load_dataset
 from PIL.Image import Image
 from tqdm.asyncio import tqdm
@@ -54,6 +58,7 @@ except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
 from datasets import load_dataset
+
 
 @dataclass
 class BenchmarkMetrics:
@@ -83,6 +88,7 @@ class BenchmarkMetrics:
     std_e2el_ms: float
     percentiles_e2el_ms: List[Tuple[float, float]]
 
+
 def sample_cnn_dailymail_requests(
     dataset_path: str,
     num_requests: int,
@@ -93,11 +99,10 @@ def sample_cnn_dailymail_requests(
         raise ValueError("output_len too small")
     dataset = load_dataset("cnn_dailymail", "3.0.0", split="test")
     question = "Summarize the above article. Try to directly reuse the sentences in the article when possible."
-    dataset = [(data["article"] + question,
-                data["highlights"]) for data in dataset]
+    dataset = [(data["article"] + question, data["highlights"]) for data in dataset]
     # Shuffle the dataset.
     random.shuffle(dataset)
-    
+
     # Filter out sequences that are too long
     filtered_dataset: List[Tuple[str, int, int]] = []
     for i in range(len(dataset)):
@@ -110,15 +115,17 @@ def sample_cnn_dailymail_requests(
         completion = dataset[i][1]
         completion_token_ids = tokenizer(completion).input_ids
         prompt_len = len(prompt_token_ids)
-        output_len = len(completion_token_ids
-                         ) if fixed_output_len is None else fixed_output_len
+        output_len = (
+            len(completion_token_ids) if fixed_output_len is None else fixed_output_len
+        )
         if prompt_len > 1024 * 128 or prompt_len + output_len > 1024 * 128:
             # Prune too long sequences.
             continue
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     return filtered_dataset
-    
+
+
 def sample_sharegpt_requests(
     dataset_path: str,
     num_requests: int,
@@ -133,8 +140,10 @@ def sample_sharegpt_requests(
     # Filter out the conversations with less than 2 turns.
     dataset = [data for data in dataset if len(data["conversations"]) >= 2]
     # Only keep the first two turns of each conversation.
-    dataset = [(data["conversations"][0]["value"],
-                data["conversations"][1]["value"]) for data in dataset]
+    dataset = [
+        (data["conversations"][0]["value"], data["conversations"][1]["value"])
+        for data in dataset
+    ]
 
     # Shuffle the dataset.
     random.shuffle(dataset)
@@ -151,8 +160,9 @@ def sample_sharegpt_requests(
         completion = dataset[i][1]
         completion_token_ids = tokenizer(completion).input_ids
         prompt_len = len(prompt_token_ids)
-        output_len = len(completion_token_ids
-                         ) if fixed_output_len is None else fixed_output_len
+        output_len = (
+            len(completion_token_ids) if fixed_output_len is None else fixed_output_len
+        )
         if prompt_len < 4 or output_len < 4:
             # Prune too short sequences.
             continue
@@ -182,24 +192,27 @@ def sample_sonnet_requests(
 
     # Tokenize the poem lines.
     poem_token_ids = tokenizer(poem_lines).input_ids
-    average_poem_len = sum(
-        len(token_ids) for token_ids in poem_token_ids) / len(poem_token_ids)
+    average_poem_len = sum(len(token_ids) for token_ids in poem_token_ids) / len(
+        poem_token_ids
+    )
 
     # Base prefix for all requests.
     base_prompt = "Pick as many lines as you can from these poem lines:\n"
-    base_message = [{
-        "role": "user",
-        "content": base_prompt,
-    }]
+    base_message = [
+        {
+            "role": "user",
+            "content": base_prompt,
+        }
+    ]
     base_prompt_formatted = tokenizer.apply_chat_template(
-        base_message, add_generation_prompt=True, tokenize=False)
+        base_message, add_generation_prompt=True, tokenize=False
+    )
     base_prompt_offset = len(tokenizer(base_prompt_formatted).input_ids)
 
     assert (
         input_len > base_prompt_offset
     ), f"Please set 'args.sonnet-input-len' higher than {base_prompt_offset}."
-    num_input_lines = round(
-        (input_len - base_prompt_offset) / average_poem_len)
+    num_input_lines = round((input_len - base_prompt_offset) / average_poem_len)
 
     # First approximately `prefix_len` number of tokens in the
     # prompt are fixed poem lines.
@@ -207,16 +220,15 @@ def sample_sonnet_requests(
         prefix_len > base_prompt_offset
     ), f"Please set 'args.sonnet-prefix-len' higher than {base_prompt_offset}."
 
-    num_prefix_lines = round(
-        (prefix_len - base_prompt_offset) / average_poem_len)
+    num_prefix_lines = round((prefix_len - base_prompt_offset) / average_poem_len)
     prefix_lines = poem_lines[:num_prefix_lines]
 
     # Sample the rest of lines per request.
     sampled_requests: List[Tuple[str, int, int]] = []
     for _ in range(num_requests):
         sampled_lines = "".join(
-            prefix_lines +
-            random.sample(poem_lines, num_input_lines - num_prefix_lines))
+            prefix_lines + random.sample(poem_lines, num_input_lines - num_prefix_lines)
+        )
 
         prompt = f"{base_prompt}{sampled_lines}"
         message = [
@@ -226,10 +238,12 @@ def sample_sonnet_requests(
             },
         ]
         prompt_formatted = tokenizer.apply_chat_template(
-            message, add_generation_prompt=True, tokenize=False)
+            message, add_generation_prompt=True, tokenize=False
+        )
         prompt_len = len(tokenizer(prompt_formatted).input_ids)
         sampled_requests.append(
-            (prompt, prompt_formatted, prompt_len, output_len, None))
+            (prompt, prompt_formatted, prompt_len, output_len, None)
+        )
 
     return sampled_requests
 
@@ -242,16 +256,14 @@ def sample_hf_requests(
     tokenizer: PreTrainedTokenizerBase,
     fixed_output_len: Optional[int] = None,
 ) -> List[Tuple[str, str, int, Optional[Dict[str, Collection[str]]]]]:
-    dataset = load_dataset(dataset_path,
-                           name=dataset_subset,
-                           split=dataset_split,
-                           streaming=True)
-    assert "conversations" in dataset.features, (
-        "HF Dataset must have 'conversations' column.")
-    filtered_dataset = dataset.shuffle().filter(
-        lambda x: len(x["conversations"]) >= 2)
-    sampled_requests: List[Tuple[str, int, int, Dict[str,
-                                                     Collection[str]]]] = []
+    dataset = load_dataset(
+        dataset_path, name=dataset_subset, split=dataset_split, streaming=True
+    )
+    assert (
+        "conversations" in dataset.features
+    ), "HF Dataset must have 'conversations' column."
+    filtered_dataset = dataset.shuffle().filter(lambda x: len(x["conversations"]) >= 2)
+    sampled_requests: List[Tuple[str, int, int, Dict[str, Collection[str]]]] = []
     for data in filtered_dataset:
         if len(sampled_requests) == num_requests:
             break
@@ -262,8 +274,9 @@ def sample_hf_requests(
         completion = data["conversations"][1]["value"]
         completion_token_ids = tokenizer(completion).input_ids
         prompt_len = len(prompt_token_ids)
-        output_len = len(completion_token_ids
-                         ) if fixed_output_len is None else fixed_output_len
+        output_len = (
+            len(completion_token_ids) if fixed_output_len is None else fixed_output_len
+        )
         if prompt_len < 4 or output_len < 4:
             # Prune too short sequences.
             continue
@@ -275,14 +288,11 @@ def sample_hf_requests(
             image: Image = data["image"]
             image = image.convert("RGB")
             image_data = io.BytesIO()
-            image.save(image_data, format='JPEG')
-            image_base64 = base64.b64encode(
-                image_data.getvalue()).decode("utf-8")
+            image.save(image_data, format="JPEG")
+            image_base64 = base64.b64encode(image_data.getvalue()).decode("utf-8")
             mm_content = {
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{image_base64}"
-                },
+                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
             }
         else:
             mm_content = None
@@ -300,9 +310,9 @@ def sample_random_requests(
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
 ) -> List[Tuple[str, int, int]]:
-    prefix_token_ids = np.random.randint(0,
-                                         tokenizer.vocab_size,
-                                         size=prefix_len).tolist()
+    prefix_token_ids = np.random.randint(
+        0, tokenizer.vocab_size, size=prefix_len
+    ).tolist()
 
     input_lens = np.random.randint(
         int(input_len * range_ratio),
@@ -317,12 +327,17 @@ def sample_random_requests(
     offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
     input_requests = []
     for i in range(num_prompts):
-        prompt = tokenizer.decode(prefix_token_ids +
-                                  [(offsets[i] + i + j) % tokenizer.vocab_size
-                                   for j in range(input_lens[i])])
+        prompt = tokenizer.decode(
+            prefix_token_ids
+            + [
+                (offsets[i] + i + j) % tokenizer.vocab_size
+                for j in range(input_lens[i])
+            ]
+        )
 
-        input_requests.append((prompt, int(prefix_len + input_lens[i]),
-                               int(output_lens[i]), None))
+        input_requests.append(
+            (prompt, int(prefix_len + input_lens[i]), int(output_lens[i]), None)
+        )
 
     return input_requests
 
@@ -367,13 +382,12 @@ def calculate_metrics(
             # multiple output tokens may be bundled together
             # Note : this may inflate the output token count slightly
             output_len = len(
-                tokenizer(outputs[i].generated_text,
-                          add_special_tokens=False).input_ids)
+                tokenizer(outputs[i].generated_text, add_special_tokens=False).input_ids
+            )
             actual_output_lens.append(output_len)
             total_input += input_requests[i][1]
             if output_len > 1:
-                tpots.append(
-                    (outputs[i].latency - outputs[i].ttft) / (output_len - 1))
+                tpots.append((outputs[i].latency - outputs[i].ttft) / (output_len - 1))
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
             e2els.append(outputs[i].latency)
@@ -385,7 +399,8 @@ def calculate_metrics(
         warnings.warn(
             "All requests failed. This is likely due to a misconfiguration "
             "on the benchmark arguments.",
-            stacklevel=2)
+            stacklevel=2,
+        )
     metrics = BenchmarkMetrics(
         completed=completed,
         total_input=total_input,
@@ -393,27 +408,31 @@ def calculate_metrics(
         request_throughput=completed / dur_s,
         output_throughput=sum(actual_output_lens) / dur_s,
         total_token_throughput=(total_input + sum(actual_output_lens)) / dur_s,
-        mean_ttft_ms=np.mean(ttfts or 0) *
-        1000,  # ttfts is empty if streaming is not supported by backend
+        mean_ttft_ms=np.mean(ttfts or 0)
+        * 1000,  # ttfts is empty if streaming is not supported by backend
         std_ttft_ms=np.std(ttfts or 0) * 1000,
         median_ttft_ms=np.median(ttfts or 0) * 1000,
-        percentiles_ttft_ms=[(p, np.percentile(ttfts or 0, p) * 1000)
-                             for p in selected_percentiles],
+        percentiles_ttft_ms=[
+            (p, np.percentile(ttfts or 0, p) * 1000) for p in selected_percentiles
+        ],
         mean_tpot_ms=np.mean(tpots or 0) * 1000,
         std_tpot_ms=np.std(tpots or 0) * 1000,
         median_tpot_ms=np.median(tpots or 0) * 1000,
-        percentiles_tpot_ms=[(p, np.percentile(tpots or 0, p) * 1000)
-                             for p in selected_percentiles],
+        percentiles_tpot_ms=[
+            (p, np.percentile(tpots or 0, p) * 1000) for p in selected_percentiles
+        ],
         mean_itl_ms=np.mean(itls or 0) * 1000,
         std_itl_ms=np.std(itls or 0) * 1000,
         median_itl_ms=np.median(itls or 0) * 1000,
-        percentiles_itl_ms=[(p, np.percentile(itls or 0, p) * 1000)
-                            for p in selected_percentiles],
+        percentiles_itl_ms=[
+            (p, np.percentile(itls or 0, p) * 1000) for p in selected_percentiles
+        ],
         mean_e2el_ms=np.median(e2els or 0) * 1000,
         std_e2el_ms=np.std(e2els or 0) * 1000,
         median_e2el_ms=np.mean(e2els or 0) * 1000,
-        percentiles_e2el_ms=[(p, np.percentile(e2els or 0, p) * 1000)
-                             for p in selected_percentiles],
+        percentiles_e2el_ms=[
+            (p, np.percentile(e2els or 0, p) * 1000) for p in selected_percentiles
+        ],
     )
 
     return metrics, actual_output_lens
@@ -441,12 +460,12 @@ async def benchmark(
         raise ValueError(f"Unknown backend: {backend}")
 
     print("Starting initial single prompt test run...")
-    test_prompt, test_prompt_len, test_output_len, test_mm_content = (
-        input_requests[0])
+    test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
     if backend != "openai-chat" and test_mm_content is not None:
         # multi-modal benchmark is only available on OpenAI Chat backend.
         raise ValueError(
-            "Multi-modal content is only supported on 'openai-chat' backend.")
+            "Multi-modal content is only supported on 'openai-chat' backend."
+        )
     test_input = RequestFuncInput(
         model=model_id,
         prompt=test_prompt,
@@ -462,7 +481,8 @@ async def benchmark(
     if not test_output.success:
         raise ValueError(
             "Initial test run failed - Please make sure benchmark arguments "
-            f"are correctly specified. Error: {test_output.error}")
+            f"are correctly specified. Error: {test_output.error}"
+        )
     else:
         print("Initial test run completed. Starting main benchmark run...")
 
@@ -504,8 +524,9 @@ async def benchmark(
         )
         tasks.append(
             asyncio.create_task(
-                request_func(request_func_input=request_func_input,
-                             pbar=pbar)))
+                request_func(request_func_input=request_func_input, pbar=pbar)
+            )
+        )
     outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
 
     if profile:
@@ -538,19 +559,26 @@ async def benchmark(
         selected_percentiles=selected_percentiles,
     )
 
-    print("{s:{c}^{n}}".format(s=' Serving Benchmark Result ', n=50, c='='))
+    print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
-    print("{:<40} {:<10.2f}".format("Benchmark duration (s):",
-                                    benchmark_duration))
+    print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
-    print("{:<40} {:<10}".format("Total generated tokens:",
-                                 metrics.total_output))
-    print("{:<40} {:<10.2f}".format("Request throughput (req/s):",
-                                    metrics.request_throughput))
-    print("{:<40} {:<10.2f}".format("Output token throughput (tok/s):",
-                                    metrics.output_throughput))
-    print("{:<40} {:<10.2f}".format("Total Token throughput (tok/s):",
-                                    metrics.total_token_throughput))
+    print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Request throughput (req/s):", metrics.request_throughput
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Output token throughput (tok/s):", metrics.output_throughput
+        )
+    )
+    print(
+        "{:<40} {:<10.2f}".format(
+            "Total Token throughput (tok/s):", metrics.total_token_throughput
+        )
+    )
 
     result = {
         "duration": benchmark_duration,
@@ -580,29 +608,35 @@ async def benchmark(
         # metric.
         if metric_attribute_name not in selected_percentile_metrics:
             return
-        print("{s:{c}^{n}}".format(s=metric_header, n=50, c='-'))
-        print("{:<40} {:<10.2f}".format(
-            f"Mean {metric_name} (ms):",
-            getattr(metrics, f"mean_{metric_attribute_name}_ms")))
-        print("{:<40} {:<10.2f}".format(
-            f"Median {metric_name} (ms):",
-            getattr(metrics, f"median_{metric_attribute_name}_ms")))
+        print("{s:{c}^{n}}".format(s=metric_header, n=50, c="-"))
+        print(
+            "{:<40} {:<10.2f}".format(
+                f"Mean {metric_name} (ms):",
+                getattr(metrics, f"mean_{metric_attribute_name}_ms"),
+            )
+        )
+        print(
+            "{:<40} {:<10.2f}".format(
+                f"Median {metric_name} (ms):",
+                getattr(metrics, f"median_{metric_attribute_name}_ms"),
+            )
+        )
         result[f"mean_{metric_attribute_name}_ms"] = getattr(
-            metrics, f"mean_{metric_attribute_name}_ms")
+            metrics, f"mean_{metric_attribute_name}_ms"
+        )
         result[f"median_{metric_attribute_name}_ms"] = getattr(
-            metrics, f"median_{metric_attribute_name}_ms")
+            metrics, f"median_{metric_attribute_name}_ms"
+        )
         result[f"std_{metric_attribute_name}_ms"] = getattr(
-            metrics, f"std_{metric_attribute_name}_ms")
-        for p, value in getattr(metrics,
-                                f"percentiles_{metric_attribute_name}_ms"):
+            metrics, f"std_{metric_attribute_name}_ms"
+        )
+        for p, value in getattr(metrics, f"percentiles_{metric_attribute_name}_ms"):
             p_word = str(int(p)) if int(p) == p else str(p)
-            print("{:<40} {:<10.2f}".format(f"P{p_word} {metric_name} (ms):",
-                                            value))
+            print("{:<40} {:<10.2f}".format(f"P{p_word} {metric_name} (ms):", value))
             result[f"p{p_word}_{metric_attribute_name}_ms"] = value
 
     process_one_metric("ttft", "TTFT", "Time to First Token")
-    process_one_metric("tpot", "TPOT",
-                       "Time per Output Token (excl. 1st token)")
+    process_one_metric("tpot", "TPOT", "Time per Output Token (excl. 1st token)")
     process_one_metric("itl", "ITL", "Inter-token Latency")
     process_one_metric("e2el", "E2EL", "End-to-end Latency")
 
@@ -627,15 +661,15 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
-    tokenizer = get_tokenizer(tokenizer_id,
-                              trust_remote_code=args.trust_remote_code)
+    tokenizer = get_tokenizer(tokenizer_id, trust_remote_code=args.trust_remote_code)
 
     if args.dataset is not None:
         warnings.warn(
             "The '--dataset' argument will be deprecated in the next "
             "release. Please use '--dataset-name' and "
             "'--dataset-path' in the future runs.",
-            stacklevel=2)
+            stacklevel=2,
+        )
         input_requests = sample_sharegpt_requests(
             dataset_path=args.dataset,
             num_requests=args.num_prompts,
@@ -662,9 +696,10 @@ def main(args: argparse.Namespace):
                 prefix_len=args.sonnet_prefix_len,
                 tokenizer=tokenizer,
             )
-            input_requests = [(prompt, prompt_len, output_len, None)
-                              for prompt, prompt_formatted, prompt_len,
-                              output_len, _ in input_requests]
+            input_requests = [
+                (prompt, prompt_len, output_len, None)
+                for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
+            ]
         else:
             assert (
                 tokenizer.chat_template or tokenizer.default_chat_template
@@ -677,9 +712,10 @@ def main(args: argparse.Namespace):
                 prefix_len=args.sonnet_prefix_len,
                 tokenizer=tokenizer,
             )
-            input_requests = [(prompt_formatted, prompt_len, output_len, None)
-                              for prompt, prompt_formatted, prompt_len,
-                              output_len, _ in input_requests]
+            input_requests = [
+                (prompt_formatted, prompt_len, output_len, None)
+                for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
+            ]
 
     elif args.dataset_name == "hf":
         input_requests = sample_hf_requests(
@@ -725,10 +761,9 @@ def main(args: argparse.Namespace):
             disable_tqdm=args.disable_tqdm,
             profile=args.profile,
             selected_percentile_metrics=args.percentile_metrics.split(","),
-            selected_percentiles=[
-                float(p) for p in args.metric_percentiles.split(",")
-            ],
-        ))
+            selected_percentiles=[float(p) for p in args.metric_percentiles.split(",")],
+        )
+    )
 
     # Save config and results to json
     if args.save_result:
@@ -757,14 +792,15 @@ def main(args: argparse.Namespace):
 
         # Traffic
         result_json["request_rate"] = (
-            args.request_rate if args.request_rate < float("inf") else "inf")
+            args.request_rate if args.request_rate < float("inf") else "inf"
+        )
 
         # Merge with benchmark result
         result_json = {**result_json, **benchmark_result}
 
         # Save to file
         base_model_id = model_id.split("/")[-1]
-        file_name = f"{backend}-{args.request_rate}qps-{base_model_id}-{current_dt}.json"  #noqa
+        file_name = f"{backend}-{args.request_rate}qps-{base_model_id}-{current_dt}.json"  # noqa
         if args.result_filename:
             file_name = args.result_filename
         if args.result_dir:
@@ -775,7 +811,8 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(
-        description="Benchmark the online serving throughput.")
+        description="Benchmark the online serving throughput."
+    )
     parser.add_argument(
         "--backend",
         type=str,
@@ -800,8 +837,7 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         default=None,
-        help="Path to the ShareGPT dataset, will be deprecated in the "
-        "next release.",
+        help="Path to the ShareGPT dataset, will be deprecated in the " "next release.",
     )
     parser.add_argument(
         "--dataset-name",
@@ -810,11 +846,13 @@ if __name__ == "__main__":
         choices=["sharegpt", "sonnet", "random", "cnn_dailymail"],
         help="Name of the dataset to benchmark on.",
     )
-    parser.add_argument("--dataset-path",
-                        type=str,
-                        default=None,
-                        help="Path to the sharegpt/sonnet dataset. "
-                        "Or the huggingface dataset ID if using HF dataset.")
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default=None,
+        help="Path to the sharegpt/sonnet dataset. "
+        "Or the huggingface dataset ID if using HF dataset.",
+    )
     parser.add_argument(
         "--model",
         type=str,
@@ -824,15 +862,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tokenizer",
         type=str,
-        help=
-        "Name or path of the tokenizer, if not using the default tokenizer.",  # noqa: E501
+        help="Name or path of the tokenizer, if not using the default tokenizer.",  # noqa: E501
     )
     parser.add_argument(
         "--best-of",
         type=int,
         default=1,
-        help="Generates `best_of` sequences per prompt and "
-        "returns the best one.",
+        help="Generates `best_of` sequences per prompt and " "returns the best one.",
     )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(
@@ -845,11 +881,13 @@ if __name__ == "__main__":
         "--logprobs",
         type=int,
         default=None,
-        help=("Number of logprobs-per-token to compute & return as part of "
-              "the request. If unspecified, then either (1) if beam search "
-              "is disabled, no logprobs are computed & a single dummy "
-              "logprob is returned for each token; or (2) if beam search "
-              "is enabled 1 logprob per token is computed"),
+        help=(
+            "Number of logprobs-per-token to compute & return as part of "
+            "the request. If unspecified, then either (1) if beam search "
+            "is disabled, no logprobs are computed & a single dummy "
+            "logprob is returned for each token; or (2) if beam search "
+            "is enabled 1 logprob per token is computed"
+        ),
     )
     parser.add_argument(
         "--request-rate",
@@ -912,16 +950,17 @@ if __name__ == "__main__":
         default="ttft,tpot,itl,e2el",
         help="Comma-seperated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
-        "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". "
-        "Default value is \"ttft,tpot,itl\".")
+        'Allowed metric names are "ttft", "tpot", "itl", "e2el". '
+        'Default value is "ttft,tpot,itl".',
+    )
     parser.add_argument(
         "--metric-percentiles",
         type=str,
         default="99",
         help="Comma-seperated list of percentiles for selected metrics. "
-        "To report 25-th, 50-th, and 75-th percentiles, use \"25,50,75\". "
-        "Default value is \"99\". "
-        "Use \"--percentile-metrics\" to select metrics.",
+        'To report 25-th, 50-th, and 75-th percentiles, use "25,50,75". '
+        'Default value is "99". '
+        'Use "--percentile-metrics" to select metrics.',
     )
 
     # group for dataset specific arguments
@@ -930,22 +969,19 @@ if __name__ == "__main__":
         "--sonnet-input-len",
         type=int,
         default=550,
-        help=
-        "Number of input tokens per request, used only for sonnet dataset.",
+        help="Number of input tokens per request, used only for sonnet dataset.",
     )
     sonnet_group.add_argument(
         "--sonnet-output-len",
         type=int,
         default=150,
-        help=
-        "Number of output tokens per request, used only for sonnet dataset.",
+        help="Number of output tokens per request, used only for sonnet dataset.",
     )
     sonnet_group.add_argument(
         "--sonnet-prefix-len",
         type=int,
         default=200,
-        help=
-        "Number of prefix tokens per request, used only for sonnet dataset.",
+        help="Number of prefix tokens per request, used only for sonnet dataset.",
     )
 
     sharegpt_group = parser.add_argument_group("sharegpt dataset options")
@@ -954,22 +990,21 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Output length for each request. Overrides the output length "
-        "from the ShareGPT dataset.")
+        "from the ShareGPT dataset.",
+    )
 
     random_group = parser.add_argument_group("random dataset options")
     random_group.add_argument(
         "--random-input-len",
         type=int,
         default=1024,
-        help=
-        "Number of input tokens per request, used only for random sampling.",
+        help="Number of input tokens per request, used only for random sampling.",
     )
     random_group.add_argument(
         "--random-output-len",
         type=int,
         default=128,
-        help=
-        "Number of output tokens per request, used only for random sampling.",
+        help="Number of output tokens per request, used only for random sampling.",
     )
     random_group.add_argument(
         "--random-range-ratio",
@@ -985,17 +1020,16 @@ if __name__ == "__main__":
         help="Number of fixed prefix tokens before random "
         " context. The length range of context in a random "
         " request is [random-prefix-len, "
-        " random-prefix-len + random-prefix-len * random-range-ratio).")
+        " random-prefix-len + random-prefix-len * random-range-ratio).",
+    )
 
     hf_group = parser.add_argument_group("hf dataset options")
-    hf_group.add_argument("--hf-subset",
-                          type=str,
-                          default=None,
-                          help="Subset of the HF dataset.")
-    hf_group.add_argument("--hf-split",
-                          type=str,
-                          default=None,
-                          help="Split of the HF dataset.")
+    hf_group.add_argument(
+        "--hf-subset", type=str, default=None, help="Subset of the HF dataset."
+    )
+    hf_group.add_argument(
+        "--hf-split", type=str, default=None, help="Split of the HF dataset."
+    )
     hf_group.add_argument(
         "--hf-output-len",
         type=int,
