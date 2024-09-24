@@ -121,7 +121,7 @@ def sample_cnn_dailymail_requests(
         if prompt_len > 1024 * 128 or prompt_len + output_len > 1024 * 128:
             # Prune too long sequences.
             continue
-        filtered_dataset.append((prompt, prompt_len, output_len))
+        filtered_dataset.append((prompt, prompt_len, output_len, None))
 
     return filtered_dataset
 
