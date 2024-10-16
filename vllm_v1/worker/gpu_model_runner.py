@@ -6,8 +6,10 @@ from typing import (TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set,
 
 import numpy as np
 import torch
+import torch._dynamo.cache_size
 import torch.distributed
 import torch.nn as nn
+import torch.nn.functional as F
 
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
@@ -70,6 +72,7 @@ class GPUModelRunner:
         self.max_model_len = model_config.max_model_len
         self.max_num_blocks_per_req = cdiv(self.max_model_len, self.block_size)
         self.max_num_tokens = scheduler_config.max_num_batched_tokens
+        self.max_num_compiled_tokens = 512
 
         # Model-related.
         self.num_attn_layers = model_config.get_num_attention_layers(
@@ -78,8 +81,9 @@ class GPUModelRunner:
         self.head_size = model_config.get_head_size()
 
         # Lazy initialization
-        self.model: nn.Module  # Set after load_model
+        self.model: ModelWrapper  # Set after load_model
         self.kv_caches: List[torch.Tensor] = []
+        self.compiled_model: nn.Module
 
         # Request states.
         self.requests: Dict[str, CachedRequestState] = {}
@@ -90,6 +94,9 @@ class GPUModelRunner:
             device=self.device,
             pin_memory=self.pin_memory,
         )
+        if not self.model_config.enforce_eager:
+            from vllm import envs
+            envs.VLLM_TORCH_COMPILE_LEVEL = 1
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         # Remove stopped requests from the cached states.
@@ -175,7 +182,11 @@ class GPUModelRunner:
         if removed_req_indices:
             self.persistent_batch.condense(removed_req_indices)
 
-    def _prepare_inputs(self, scheduler_output: "SchedulerOutput"):
+    def _prepare_inputs(
+        self,
+        scheduler_output: "SchedulerOutput",
+        num_padded_tokens: int,
+    ):
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         assert total_num_scheduled_tokens > 0
         num_reqs = self.persistent_batch.num_reqs
@@ -269,8 +280,18 @@ class GPUModelRunner:
         seq_start_loc_np[0] = 0
         np.cumsum(seq_lens, out=seq_start_loc_np[1:])
 
-        input_ids = input_ids.to(self.device, non_blocking=True)
-        positions = positions.to(self.device, non_blocking=True).long()
+        input_ids_device = torch.zeros((num_padded_tokens, ),
+                                       dtype=torch.int32,
+                                       device=self.device)
+        input_ids_device[:total_num_scheduled_tokens].copy_(input_ids,
+                                                            non_blocking=True)
+        positions_device = torch.zeros((num_padded_tokens, ),
+                                       dtype=torch.int64,
+                                       device=self.device)
+        positions_device[:total_num_scheduled_tokens].copy_(positions,
+                                                            non_blocking=True)
+        # input_ids = input_ids.to(self.device, non_blocking=True)
+        # positions = positions.to(self.device, non_blocking=True).long()
         query_start_loc = query_start_loc.to(self.device, non_blocking=True)
         seq_start_loc = seq_start_loc.to(self.device, non_blocking=True)
         slot_mapping = slot_mapping.to(self.device, non_blocking=True).long()
@@ -288,7 +309,7 @@ class GPUModelRunner:
         # token from the partial request.
         # TODO: Support prompt logprobs.
         logits_indices = query_start_loc[1:] - 1
-        return input_ids, positions, attn_metadata, logits_indices
+        return input_ids_device, positions_device, attn_metadata, logits_indices
 
     def _prepare_sampling(
         self,
@@ -313,18 +334,26 @@ class GPUModelRunner:
         scheduler_output: "SchedulerOutput",
     ) -> ModelRunnerOutput:
         self._update_states(scheduler_output)
-        inputs = self._prepare_inputs(scheduler_output)
+        num_tokens = scheduler_output.total_num_scheduled_tokens
+        if (not self.model_config.enforce_eager
+                and num_tokens <= self.max_num_compiled_tokens):
+            use_compiled_model = True
+            num_padded_tokens = self._get_padded_num_tokens(num_tokens)
+        else:
+            use_compiled_model = False
+            num_padded_tokens = num_tokens
+        print(num_tokens, num_padded_tokens)
+        inputs = self._prepare_inputs(scheduler_output, num_padded_tokens)
         input_ids, positions, attn_metadata, logits_indices = inputs
 
+        model_executable = self.compiled_model if use_compiled_model else self.model
         with set_forward_context(attn_metadata):
-            hidden_states = self.model(
+            hidden_states = model_executable(
                 input_ids=input_ids,
                 positions=positions,
-                kv_caches=self.kv_caches,
-                attn_metadata=attn_metadata,
             )
         hidden_states = hidden_states[logits_indices]
-        logits = self.model.compute_logits(hidden_states, None)
+        logits = self.model.compute_logits(hidden_states)
 
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self._prepare_sampling(scheduler_output)
@@ -378,19 +407,23 @@ class GPUModelRunner:
         logger.info("Starting to load model %s...", self.model_config.model)
         with DeviceMemoryProfiler() as m:
             with patch("vllm.model_executor.layers.sampler.Sampler", Sampler):
-                self.model = get_model(model_config=self.model_config,
-                                       device_config=self.device_config,
-                                       load_config=self.load_config,
-                                       lora_config=self.lora_config,
-                                       parallel_config=self.parallel_config,
-                                       scheduler_config=self.scheduler_config,
-                                       cache_config=self.cache_config)
+                model = get_model(model_config=self.model_config,
+                                  device_config=self.device_config,
+                                  load_config=self.load_config,
+                                  lora_config=self.lora_config,
+                                  parallel_config=self.parallel_config,
+                                  scheduler_config=self.scheduler_config,
+                                  cache_config=self.cache_config)
 
+        self.model = ModelWrapper(model, self.kv_caches)
         self.model_memory_usage = m.consumed_memory
         logger.info("Loading model weights took %.4f GB",
                     self.model_memory_usage / float(2**30))
 
-    def _dummy_run(self, model: nn.Module, num_tokens: int) -> None:
+    def _dummy_run(self,
+                   model: nn.Module,
+                   num_tokens: int,
+                   mark_dynamic: bool = False) -> None:
         input_ids = torch.zeros(num_tokens,
                                 dtype=torch.int32,
                                 device=self.device)
@@ -398,7 +431,10 @@ class GPUModelRunner:
                                 dtype=torch.long,
                                 device=self.device)
         kv_caches = [None for _ in range(self.num_attn_layers)]
-        model(input_ids, positions, kv_caches, attn_metadata=None)
+        if mark_dynamic:
+            torch._dynamo.mark_dynamic(input_ids, 0)
+            torch._dynamo.mark_dynamic(positions, 0)
+        model(input_ids, positions)
         return
 
     @torch.inference_mode()
@@ -409,7 +445,42 @@ class GPUModelRunner:
 
     @torch.inference_mode()
     def capture_model(self) -> None:
+        start = time.time()
+        torch._dynamo.config.cache_size_limit = self.max_num_compiled_tokens
+        self.compiled_model = torch.compile(self.model,
+                                            fullgraph=False,
+                                            mode="reduce-overhead")
+
+        compiled_num_tokens = set()
+        for n in reversed(range(1, self.max_num_compiled_tokens + 1)):
+            padded_n = self._get_padded_num_tokens(n)
+            if padded_n in compiled_num_tokens:
+                continue
+            compiled_num_tokens.add(padded_n)
+            self._dummy_run(self.compiled_model, padded_n, mark_dynamic=True)
+            torch.cuda.synchronize()
+            self._dummy_run(self.compiled_model, padded_n, mark_dynamic=True)
+            torch.cuda.synchronize()
+            self._dummy_run(self.compiled_model, padded_n, mark_dynamic=True)
+            torch.cuda.synchronize()
+            print(f"Compiled model with {n} tokens")
+        end = time.time()
+        logger.info("Capturing model took %.2f seconds", end - start)
         return
+
+    def _get_padded_num_tokens(self, num_tokens: int) -> int:
+        if num_tokens <= 256:
+            # 32 graphs
+            return (num_tokens + 7) // 8 * 8
+        if num_tokens <= 512:
+            # 16 graphs
+            return (num_tokens + 15) // 16 * 16
+        if num_tokens <= 1024:
+            # 16 graphs
+            return (num_tokens + 31) // 32 * 32
+        if num_tokens <= 2048:
+            # 16 graphs
+            return (num_tokens + 63) // 64 * 64
 
     def initialize_kv_cache(self, num_blocks: int) -> None:
         assert len(self.kv_caches) == 0
@@ -425,6 +496,41 @@ class GPUModelRunner:
                 torch.zeros(kv_cache_shape,
                             dtype=self.kv_cache_dtype,
                             device=self.device))
+
+
+class ModelWrapper(nn.Module):
+
+    # HACK(woosuk): This class is to wrap the model with KV caches so that
+    # the KV caches are not copied every time the model is executed.
+    def __init__(self, model: nn.Module, kv_caches: List[torch.Tensor]):
+        super().__init__()
+        self.model = model
+        self.kv_caches = kv_caches
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        hidden_states = self.model(
+            input_ids=input_ids,
+            positions=positions,
+            kv_caches=self.kv_caches,
+            attn_metadata=None,
+        )
+        return hidden_states
+
+    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        logits = self.model.compute_logits(hidden_states, None)
+        return logits
+
+    def sample(
+        self,
+        logits: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+    ) -> SamplerOutput:
+        sampler_output = self.model.sample(logits, sampling_metadata)
+        return sampler_output
 
 
 @dataclass

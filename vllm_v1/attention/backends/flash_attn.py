@@ -137,7 +137,7 @@ class FlashAttentionImpl(AttentionImpl):
         assert k_scale == 1.0 and v_scale == 1.0, (
             "key/v_scale is not supported in FlashAttention.")
 
-        output = torch.ops.vllm.unified_flash_attention(
+        output = f(
             query,
             key,
             value,
@@ -156,8 +156,12 @@ class FlashAttentionImpl(AttentionImpl):
         return output
 
 
-@torch.library.custom_op("vllm::unified_flash_attention",
-                         mutates_args=["kv_cache"])
+@torch.compiler.disable
+def f(*args, **kwargs):
+    return unified_flash_attention(*args, **kwargs)
+
+
+@torch.library.custom_op("vllm::unified_flash_attention", mutates_args=[])
 def unified_flash_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -174,6 +178,7 @@ def unified_flash_attention(
     alibi_slopes: Optional[torch.Tensor] = None,
     logits_soft_cap: Optional[float] = None,
 ) -> torch.Tensor:
+    torch.cuda.synchronize()
     current_metadata = get_forward_context()
     if current_metadata is None:
         # Profiling run.
@@ -184,6 +189,7 @@ def unified_flash_attention(
     attn_metadata: FlashAttentionMetadata = current_metadata
 
     num_tokens, hidden_size = query.shape
+    num_actual_tokens = attn_metadata.slot_mapping.shape[0]
     # Reshape the query, key, and value tensors.
     query = query.view(-1, num_heads, head_size)
     key = key.view(-1, num_kv_heads, head_size)
@@ -193,8 +199,8 @@ def unified_flash_attention(
     key_cache = kv_cache[0]
     value_cache = kv_cache[1]
     torch.ops._C_cache_ops.reshape_and_cache_flash(
-        key,
-        value,
+        key[:num_actual_tokens],
+        value[:num_actual_tokens],
         kv_cache[0],
         kv_cache[1],
         attn_metadata.slot_mapping,

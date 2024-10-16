@@ -47,6 +47,8 @@ def main(args: argparse.Namespace):
         distributed_executor_backend=args.distributed_executor_backend,
         otlp_traces_endpoint=args.otlp_traces_endpoint,
         enable_prefix_caching=args.enable_prefix_caching,
+        # num_scheduler_steps=8,
+        # max_num_batched_tokens=2048,
     )
 
     sampling_params = SamplingParams(
