@@ -1796,6 +1796,8 @@ class CUDAGraphRunner:
         # Capture the graph.
         self._graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self._graph, pool=memory_pool, stream=stream):
+            print("")
+            print("my_hidden_size = {}".format(self.model.model.layers[0].mlp.my_hidden_size))
             output_hidden_or_intermediate_states = self.model(
                 input_ids=input_ids,
                 positions=positions,

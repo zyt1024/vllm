@@ -23,6 +23,7 @@
 """Inference-only LLaMA model compatible with HuggingFace weights."""
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+import gc
 import torch
 from torch import nn
 from transformers import LlamaConfig
@@ -68,6 +69,9 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+
+        self.my_hidden_size = hidden_size
+
         self.gate_up_proj = MergedColumnParallelLinear(
             input_size=hidden_size,
             output_sizes=[intermediate_size] * 2,
@@ -234,19 +238,47 @@ class LlamaDecoderLayer(nn.Module):
             bias=getattr(config, "mlp_bias", False),
             prefix=f"{prefix}.mlp",
         )
+        if not torch.cuda.is_initialized:
+            torch.cuda.init()
+
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
 
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        kv_cache: torch.Tensor,
-        attn_metadata: AttentionMetadata,
-        residual: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self._graph = None
+        self._pool = None
+
+        self._batch_size = 64
+
+        self._stream = torch.cuda.Stream()
+    def capture_mlp(self):
+        torch.cuda.synchronize()
+        self._graph = torch.cuda.CUDAGraph()
+
+        self._mlp_input = torch.zeros((self._batch_size, self.hidden_size),
+                                      dtype=torch.bfloat16).cuda()
+        self._mlp_output = torch.zeros((self._batch_size, self.hidden_size),
+                                       dtype=torch.bfloat16).cuda()
+
+        with torch.cuda.graph(self._graph,
+                              pool=self._pool,
+                              stream=self._stream):
+            output = self.mlp(self._mlp_input)
+            self._mlp_output.copy_(output)
+
+            del output
+            gc.collect()
+        torch.cuda.synchronize()
+        self._pool = self._graph.pool()
+
+    def forward(self,
+                positions: torch.Tensor,
+                hidden_states: torch.Tensor,
+                kv_cache: torch.Tensor,
+                attn_metadata: AttentionMetadata,
+                residual: Optional[torch.Tensor],
+                use_g: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
         if residual is None:
             residual = hidden_states
@@ -262,7 +294,24 @@ class LlamaDecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        # print("mlp_input: shape = {} dtype = {}".format(hidden_states.shape, hidden_states.dtype))
+
+        # if self._graph is None:
+        #     self.capture_mlp()
+
+        batch_size = hidden_states.shape[0]
+
+        if use_g and batch_size == self._batch_size:
+            # print("Running cuda graph mlp")
+            self._mlp_input.copy_(hidden_states)
+            self._graph.replay()
+            hidden_states = self._mlp_output
+        else:
+            # print("Running standard mlp")
+            hidden_states = self.mlp(hidden_states)
+
+        # print("mlp_output: shape = {} dtype = {}".format(hidden_states.shape, hidden_states.dtype))
+
         return hidden_states, residual
 
 
