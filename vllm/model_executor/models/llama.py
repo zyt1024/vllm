@@ -249,7 +249,7 @@ class LlamaDecoderLayer(nn.Module):
         self._graph = None
         self._pool = None
 
-        self._batch_size = 64
+        self._batch_size = 1
 
         self._stream = torch.cuda.Stream()
     def capture_mlp(self):
@@ -296,8 +296,8 @@ class LlamaDecoderLayer(nn.Module):
             hidden_states, residual)
         # print("mlp_input: shape = {} dtype = {}".format(hidden_states.shape, hidden_states.dtype))
 
-        # if self._graph is None:
-        #     self.capture_mlp()
+        if self._graph is None:
+            self.capture_mlp()
 
         batch_size = hidden_states.shape[0]
 
