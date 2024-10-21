@@ -247,7 +247,7 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
             torch._dynamo.mark_dynamic(t, 0)
             torch._dynamo.mark_dynamic(p, 0)
         # Dummy run.
-        self.model(token_ids,
+        output_token_ids = self.model(token_ids,
                    position_ids,
                    attn_metadata,
                    input_lens,
@@ -256,6 +256,7 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
                    num_samples,
                    kv_caches,
                    is_prompt=is_prompt)
+        output_token_ids.cpu()
 
     def warmup_model(
         self,
@@ -265,10 +266,12 @@ class TPUModelRunner(ModelRunnerBase[ModelInputForTPU]):
         logger.info("Compiling the model with different input shapes...")
         start = time.time()
         for batch_size in [1]:
-            seq_len = 16
+            seq_len = 32 * 1024
             while True:
                 self._dummy_run(batch_size, seq_len, kv_caches, is_prompt=True)
                 xm.wait_device_ops()
+                m = xm.get_memory_info(self.device)
+                print(m)
                 logger.info("batch_size: %d, seq_len: %d", batch_size, seq_len)
 
                 if seq_len >= self.model_config.max_model_len:

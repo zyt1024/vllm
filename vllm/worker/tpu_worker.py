@@ -111,31 +111,37 @@ class TPUWorker(LoraNotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         self.model_runner.load_model()
 
     def determine_num_available_blocks(self) -> Tuple[int, int]:
-        num_layers = self.model_config.get_num_layers(self.parallel_config)
+        num_layers = self.model_config.get_num_attention_layers(self.parallel_config)
         head_size = self.model_config.get_head_size()
         num_kv_heads = self.model_config.get_num_kv_heads(self.parallel_config)
+        m = xm.get_memory_info(self.device)
+        print(m)
 
         # use an empty tensor instead of `None`` to force Dynamo to pass
         # it by reference, rather by specializing on the value ``None``.
         # the `dtype` argument does not matter, and we use `float32` as
         # a placeholder (it has wide hardware support).
-        kv_caches = [(torch.tensor([], dtype=torch.float32,
-                                   device=self.device),
-                      torch.tensor([], dtype=torch.float32,
-                                   device=self.device))
-                     for _ in range(num_layers)]
+        tmp_kv_caches = []
+        for _ in range(num_layers):
+            k = torch.zeros((num_kv_heads, 1, self.cache_config.block_size, head_size),
+                            dtype=self.cache_dtype,
+                            device=self.device)
+            v = torch.zeros_like(k)
+            tmp_kv_caches.append((k, v))
         self.model_runner._dummy_run(
             batch_size=1,
             seq_len=self.scheduler_config.max_num_batched_tokens,
-            kv_caches=kv_caches,
+            kv_caches=tmp_kv_caches,
             is_prompt=True,
         )
         # Synchronize before measuring the memory usage.
+        xm.mark_step()
         xm.wait_device_ops()
 
         # Get the maximum amount of memory used by the model weights and
         # intermediate activations.
         m = xm.get_memory_info(self.device)
+        print(m)
         total_memory_size = m["bytes_limit"]
         profiled = m["peak_bytes_used"]  # Weights + intermediate activations.
 
@@ -153,7 +159,8 @@ class TPUWorker(LoraNotSupportedWorkerBase, LocalOrDistributedWorkerBase):
         num_cpu_blocks = int(self.cache_config.swap_space_bytes //
                              block_size_bytes)
         num_cpu_blocks = (num_cpu_blocks // 8) * 8  # Round down to 8.
-        return num_tpu_blocks, num_cpu_blocks
+        return 8, 8
+        # return num_tpu_blocks, num_cpu_blocks
 
     def initialize_cache(
         self,
