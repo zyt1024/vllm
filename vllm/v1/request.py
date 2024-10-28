@@ -48,6 +48,7 @@ class Request:
         # Raw multimodal data before the mm input mapper (e.g., PIL images).
         self.mm_data = inputs.get("multi_modal_data")
         self.mm_processor_kwargs = inputs.get("mm_processor_kwargs")
+        self.mm_positions = inputs.get("mm_positions")
         # Output of the mm input mapper (e.g., image tensors).
         self.mm_inputs: Optional[MultiModalInputs] = None
 
@@ -65,9 +66,23 @@ class Request:
     def get_finished_reason(self) -> Union[str, None]:
         return RequestStatus.get_finished_reason(self.status)
 
+    def has_encoder_inputs(self) -> bool:
+        return self.mm_positions is not None
+
+    @property
+    def num_encoder_inputs(self) -> int:
+        if self.mm_positions is None:
+            return 0
+        return len(self.mm_positions)
+
+    def get_num_encoder_tokens(self, input_id: int) -> int:
+        assert input_id < len(self.mm_positions)
+        _, num_tokens = self.mm_positions[input_id]
+        return num_tokens
+
 
 class RequestStatus(enum.IntEnum):
-    """Status of a sequence."""
+    """Status of a request."""
     WAITING = 0
     RUNNING = 1
     PREEMPTED = 2
@@ -88,7 +103,7 @@ class RequestStatus(enum.IntEnum):
 
 
 # Mapping of finished statuses to their finish reasons.
-# NOTE: The ignored sequences are the sequences whose prompt lengths
+# NOTE: The ignored requests are the requests whose prompt lengths
 # are longer than the model's length cap. Therefore, the stop
 # reason should also be "length" as in OpenAI API.
 _FINISHED_REASON_MAP = {

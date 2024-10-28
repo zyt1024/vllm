@@ -144,12 +144,15 @@ class TokenInputs(TypedDict):
     to pass the mm_processor_kwargs to each of them.
     """
 
+    mm_positions: NotRequired[Optional[List[Tuple[int, int]]]]
+
 
 def token_inputs(
     prompt_token_ids: List[int],
     prompt: Optional[str] = None,
     multi_modal_data: Optional["MultiModalDataDict"] = None,
     mm_processor_kwargs: Optional[Dict[str, Any]] = None,
+    mm_positions: Optional[List[Tuple[int, int]]] = None,
 ) -> TokenInputs:
     """Construct :class:`TokenInputs` from optional values."""
     inputs = TokenInputs(prompt_token_ids=prompt_token_ids)
@@ -160,6 +163,8 @@ def token_inputs(
         inputs["multi_modal_data"] = multi_modal_data
     if mm_processor_kwargs is not None:
         inputs["mm_processor_kwargs"] = mm_processor_kwargs
+    if mm_positions is not None:
+        inputs["mm_positions"] = mm_positions
 
     return inputs
 

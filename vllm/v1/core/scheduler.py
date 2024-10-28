@@ -7,6 +7,7 @@ from vllm.logger import init_logger
 from vllm.multimodal import MultiModalInputs
 from vllm.sampling_params import SamplingParams
 from vllm.v1.core.kv_cache_manager import KVCacheManager
+from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 
@@ -60,12 +61,16 @@ class Scheduler:
         # Request id -> RunningRequestData
         self.running_reqs_data: Dict[str, RunningRequestData] = {}
 
-    def schedule(self) -> "SchedulerOutput":
-        scheduled_new_reqs: List[Request] = []
-        scheduled_resumed_reqs: List[Request] = []
-        scheduled_running_reqs: List[Request] = []
-        preempted_reqs: List[Request] = []
+        # Encoder-related.
+        # NOTE(woosuk): Here, "encoder" includes the vision encoder. Currently,
+        # we assume that the encoder also has the Transformer architecture
+        # (e.g., ViT).
+        # FIXME(woosuk): Below are placeholder values. We need to calculate the
+        # actual values from the configurations.
+        self.max_num_encoder_input_tokens = 2048
+        self.encoder_cache_manager = EncoderCacheManager(cache_size=2048)
 
+    def schedule(self) -> "SchedulerOutput":
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and num_tokens,
@@ -73,11 +78,19 @@ class Scheduler:
         # At each step, the scheduler tries to assign tokens to the requests
         # so that each request's num_computed_tokens can catch up its
         # num_tokens. This is general enough to cover chunked prefills,
-        # prefix caching, and the "jump forward" optimization in the future.
+        # prefix caching, and the "jump decoding" optimization in the future.
+
+        scheduled_new_reqs: List[Request] = []
+        scheduled_resumed_reqs: List[Request] = []
+        scheduled_running_reqs: List[Request] = []
+        preempted_reqs: List[Request] = []
 
         req_to_new_block_ids: Dict[str, List[int]] = {}
         num_scheduled_tokens: Dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
+        # Encoder-related.
+        scheduled_encoder_inputs: Dict[str, List[int]] = {}
+        encoder_budget = self.max_num_encoder_input_tokens
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -88,6 +101,13 @@ class Scheduler:
             request = self.running[req_index]
             num_new_tokens = request.num_tokens - request.num_computed_tokens
             num_new_tokens = min(num_new_tokens, token_budget)
+            assert num_new_tokens > 0
+
+            # Schedule encoder inputs.
+            encoder_inputs_to_schedule, num_new_tokens = (
+                self._schedule_encoder_inputs(request,
+                                              request.num_computed_tokens,
+                                              num_new_tokens, encoder_budget))
             assert num_new_tokens > 0
 
             while True:
@@ -105,15 +125,36 @@ class Scheduler:
                     preempted_reqs.append(preempted_req)
                     if preempted_req == request:
                         # No more request to preempt.
+                        can_schedule = False
                         break
                 else:
                     # The request can be scheduled.
-                    scheduled_running_reqs.append(request)
+                    can_schedule = True
+                    break
+            if not can_schedule:
+                break
 
-                    req_to_new_block_ids[request.request_id] = new_block_ids
-                    num_scheduled_tokens[request.request_id] = num_new_tokens
-                    token_budget -= num_new_tokens
-                    req_index += 1
+            # Schedule the request.
+            scheduled_running_reqs.append(request)
+            req_to_new_block_ids[request.request_id] = new_block_ids
+            num_scheduled_tokens[request.request_id] = num_new_tokens
+            token_budget -= num_new_tokens
+            req_index += 1
+
+            # Encoder-related.
+            if encoder_inputs_to_schedule:
+                scheduled_encoder_inputs[request.request_id] = (
+                    encoder_inputs_to_schedule)
+
+                # Update the encoder budget and allocate the encoder cache.
+                for i in encoder_inputs_to_schedule:
+                    encoder_budget -= request.get_num_encoder_tokens(i)
+                    self.encoder_cache_manager.allocate(request, i)
+
+                # If there is a remaining encoder input for the request,
+                # do not schedule any more request.
+                if (encoder_inputs_to_schedule[-1] <
+                        request.num_encoder_inputs - 1):
                     break
 
         # Next, schedule the WAITING requests.
@@ -139,12 +180,21 @@ class Scheduler:
                 num_new_tokens = request.num_tokens - num_computed_tokens
                 num_new_tokens = min(num_new_tokens, token_budget)
                 assert num_new_tokens > 0
+
+                # Schedule encoder inputs.
+                encoder_inputs_to_schedule, num_new_tokens = (
+                    self._schedule_encoder_inputs(request, num_computed_tokens,
+                                                  num_new_tokens,
+                                                  encoder_budget))
+                if num_new_tokens == 0:
+                    # The request cannot be scheduled.
+                    break
+
                 new_block_ids = self.kv_cache_manager.allocate_slots(
                     request, num_new_tokens, computed_block_ids)
                 if new_block_ids is None:
                     # The request cannot be scheduled.
                     break
-                request.num_computed_tokens = num_computed_tokens
 
                 self.waiting.popleft()
                 self.running.append(request)
@@ -161,6 +211,23 @@ class Scheduler:
                 num_scheduled_tokens[request.request_id] = num_new_tokens
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
+                request.num_computed_tokens = num_computed_tokens
+
+                # Encoder-related.
+                if encoder_inputs_to_schedule:
+                    scheduled_encoder_inputs[request.request_id] = (
+                        encoder_inputs_to_schedule)
+
+                    # Update the encoder budget and allocate the encoder cache.
+                    for i in encoder_inputs_to_schedule:
+                        encoder_budget -= request.get_num_encoder_tokens(i)
+                        self.encoder_cache_manager.allocate(request, i)
+
+                    # If there is a remaining encoder input for the request,
+                    # do not schedule any more request.
+                    if (encoder_inputs_to_schedule[-1] <
+                            request.num_encoder_inputs - 1):
+                        break
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
@@ -194,6 +261,7 @@ class Scheduler:
             scheduled_running_reqs=running_reqs_data,
             num_scheduled_tokens=num_scheduled_tokens,
             total_num_scheduled_tokens=total_num_scheduled_tokens,
+            scheduled_encoder_inputs=scheduled_encoder_inputs,
             preempted_req_ids=preempted_req_ids,
             # finished_req_ids is an existing state in the scheduler,
             # instead of being newly scheduled in this step.
@@ -223,6 +291,49 @@ class Scheduler:
             self.running_reqs_data[request.request_id] = req_data
         return req_data
 
+    def _schedule_encoder_inputs(
+        self,
+        request: Request,
+        num_computed_tokens: int,
+        num_new_tokens: int,
+        encoder_budget: int,
+    ) -> Tuple[List[int], int]:
+        if not request.has_encoder_inputs():
+            return [], num_new_tokens
+
+        encoder_inputs_to_schedule: List[int] = []
+        mm_positions = request.mm_positions
+        assert mm_positions is not None
+        assert len(mm_positions) > 0
+        for i, (start_pos, num_encoder_tokens) in enumerate(mm_positions):
+            if start_pos >= num_computed_tokens + num_new_tokens:
+                # The encoder input is not needed in this step.
+                break
+            if start_pos + num_encoder_tokens <= num_computed_tokens:
+                # The encoder input is already computed and stored
+                # in the decoder's KV cache.
+                continue
+
+            if self.encoder_cache_manager.has_cache(request, i):
+                # The encoder input is already computed and cached.
+                continue
+
+            if not self.encoder_cache_manager.can_allocate(request, i):
+                # The encoder cache is full.
+                continue
+
+            if num_encoder_tokens <= encoder_budget:
+                encoder_budget -= num_encoder_tokens
+            else:
+                # The encoder input cannot be scheduled in this step
+                # because the encoder budget is exhausted.
+                # NOTE(woosuk): We assume that the encoder tokens should be
+                # processed altogether, as the model usually uses the
+                num_new_tokens = start_pos - num_computed_tokens
+                break
+            encoder_inputs_to_schedule.append(i)
+        return encoder_inputs_to_schedule, num_new_tokens
+
     def update_from_output(
         self,
         scheduler_output: "SchedulerOutput",
@@ -241,6 +352,16 @@ class Scheduler:
             # the request generates output tokens. Otherwise, we ignore the
             # sampler output for the request.
             assert request.num_computed_tokens <= request.num_tokens
+
+            cached_encoder_input_ids = (
+                self.encoder_cache_manager.get_cached_input_ids(request))
+            for input_id in list(cached_encoder_input_ids):
+                start_pos, num_tokens = request.mm_positions[input_id]
+                if start_pos + num_tokens <= request.num_computed_tokens:
+                    # The encoder input is already computed and stored
+                    # in the decoder's KV cache.
+                    self.encoder_cache_manager.free(request, input_id)
+
             if request.num_computed_tokens == request.num_tokens:
                 req_index = model_runner_output.req_id_to_index[req_id]
                 # NOTE(woosuk): Currently, we assume that each request
@@ -407,6 +528,7 @@ class SchedulerOutput:
 
     num_scheduled_tokens: Dict[str, int]
     total_num_scheduled_tokens: int
+    scheduled_encoder_inputs: Dict[str, List[int]]
 
     preempted_req_ids: Set[str]
     finished_req_ids: Set[str]

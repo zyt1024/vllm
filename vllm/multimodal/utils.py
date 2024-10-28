@@ -301,6 +301,7 @@ def repeat_and_pad_placeholder_tokens(
         new_prompt += prompt_parts[-1]
 
     new_token_ids: List[int] = []
+    mm_positions: List[Tuple[int, int]] = []
     placeholder_token_idx = 0
     for i, token in enumerate(prompt_token_ids):
         if token == placeholder_token_id:
@@ -310,6 +311,7 @@ def repeat_and_pad_placeholder_tokens(
                 pad_token_left=pad_token_left,
                 pad_token_right=pad_token_right,
             )
+            mm_positions.append((len(new_token_ids), len(replacement_ids)))
             new_token_ids.extend(replacement_ids)
             placeholder_token_idx += 1
 
@@ -320,4 +322,4 @@ def repeat_and_pad_placeholder_tokens(
         else:
             new_token_ids.append(token)
 
-    return new_prompt, new_token_ids
+    return new_prompt, new_token_ids, mm_positions
