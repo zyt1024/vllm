@@ -41,15 +41,15 @@ class DetokenizerOutputs(ProcessorOutputs, msgspec.Struct):
 
 class Detokenizer(Processor):
 
-    def __init__(self, tokenizer_name: str):
+    def __init__(self, tokenizer_name: str, **kwargs):
         super().__init__(DetokenizerImpl, DetokenizerInputs,
-                         DetokenizerOutputs, tokenizer_name)
+                         DetokenizerOutputs, tokenizer_name, **kwargs)
 
 
 class DetokenizerImpl(ProcessorImpl):
 
-    def __init__(self, tokenizer_name: str):
-        self.tokenizer = get_tokenizer(tokenizer_name)
+    def __init__(self, tokenizer_name: str, **kwargs):
+        self.tokenizer = get_tokenizer(tokenizer_name, **kwargs)
         # req_id -> RequestState
         self.request_states: Dict[str, RequestState] = {}
 
