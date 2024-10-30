@@ -145,6 +145,9 @@ class TokenInputs(TypedDict):
     """
 
     mm_positions: NotRequired[Optional[List[Tuple[int, int]]]]
+    """
+    (start_pos, num_tokens) tuples for each multimodal input in the prompt.
+    """
 
 
 def token_inputs(

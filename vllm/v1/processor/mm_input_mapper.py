@@ -32,7 +32,7 @@ class MMInputMapperOutputs(ProcessorOutputs):
 
     # [num_reqs]
     req_ids: List[str]
-    mm_inputs: List[MultiModalInputs]
+    mm_inputs: List[Optional[MultiModalInputs]]
 
 
 class MMInputMapper(Processor):
