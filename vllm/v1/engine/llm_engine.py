@@ -272,7 +272,7 @@ class LLMEngine:
         if req.mm_data is None:
             # No multi-modal data for this request.
             self.scheduler.add_request(req)
-        elif req.mm_inputs is not None:
+        elif req.mm_inputs:
             # The multi-modal inputs have already been processed.
             self.scheduler.add_request(req)
         else:
