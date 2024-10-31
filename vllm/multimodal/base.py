@@ -102,6 +102,24 @@ class MultiModalInputs(_MultiModalInputsBase):
         }
 
     @staticmethod
+    def unbatch(
+        inputs: "MultiModalInputs",
+        num_inputs: int,
+    ) -> List["MultiModalInputs"]:
+        if num_inputs == 1:
+            return [inputs]
+
+        inputs_list = [MultiModalInputs() for _ in range(num_inputs)]
+        for k, v in inputs.items():
+            for i in range(num_inputs):
+                assert len(v) == num_inputs
+                if isinstance(v, torch.Tensor):
+                    inputs_list[i][k] = v[i].unsqueeze(0)
+                else:
+                    inputs_list[i][k] = v[i]
+        return inputs_list
+
+    @staticmethod
     def as_kwargs(
         batched_inputs: BatchedTensorInputs,
         *,

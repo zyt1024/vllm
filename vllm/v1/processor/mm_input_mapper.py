@@ -32,7 +32,7 @@ class MMInputMapperOutputs(ProcessorOutputs):
 
     # [num_reqs]
     req_ids: List[str]
-    mm_inputs: List[Optional[MultiModalInputs]]
+    mm_inputs: List[List[MultiModalInputs]]
 
 
 class MMInputMapper(Processor):
@@ -56,17 +56,23 @@ class MMInputMapperImpl(ProcessorImpl):
 
     def process_inputs(self,
                        inputs: MMInputMapperInputs) -> MMInputMapperOutputs:
-        mm_inputs: List[Optional[MultiModalInputs]] = []
+        mm_inputs: List[List[MultiModalInputs]] = []
         num_reqs = len(inputs.req_ids)
         for i in range(num_reqs):
             if inputs.mm_data[i] is None:
                 # No multi-modal input for this request.
-                mm_inputs.append(None)
+                mm_inputs.append([])
                 continue
 
             mm_input = self.multi_modal_input_mapper(
                 inputs.mm_data[i],
                 mm_processor_kwargs=inputs.mm_processor_kwargs[i],
             )
-            mm_inputs.append(mm_input)
+            num_inputs = 0
+            for v in inputs.mm_data[i].values():
+                if isinstance(v, list):
+                    num_inputs += len(v)
+                else:
+                    num_inputs += 1
+            mm_inputs.append(MultiModalInputs.unbatch(mm_input, num_inputs))
         return MMInputMapperOutputs(inputs.req_ids, mm_inputs)
