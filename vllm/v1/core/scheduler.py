@@ -95,8 +95,7 @@ class Scheduler:
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running):
-            if token_budget == 0:
-                break
+            assert token_budget > 0
 
             request = self.running[req_index]
             num_new_tokens = request.num_tokens - request.num_computed_tokens
@@ -145,7 +144,6 @@ class Scheduler:
             if encoder_inputs_to_schedule:
                 scheduled_encoder_inputs[request.request_id] = (
                     encoder_inputs_to_schedule)
-
                 # Update the encoder budget and allocate the encoder cache.
                 for i in encoder_inputs_to_schedule:
                     encoder_budget -= request.get_num_encoder_tokens(i)
@@ -211,13 +209,14 @@ class Scheduler:
                 if encoder_inputs_to_schedule:
                     scheduled_encoder_inputs[request.request_id] = (
                         encoder_inputs_to_schedule)
-
                     # Update the encoder budget and allocate the encoder cache.
                     for i in encoder_inputs_to_schedule:
                         encoder_budget -= request.get_num_encoder_tokens(i)
                         self.encoder_cache_manager.allocate(request, i)
 
                 if num_computed_tokens + num_new_tokens < request.num_tokens:
+                    # NOTE(woosuk): At most 1 request is allowed to be in the
+                    # "partial" state.
                     break
 
         # Check if the scheduling constraints are satisfied.
