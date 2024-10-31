@@ -50,7 +50,7 @@ class Request:
         self.mm_processor_kwargs = inputs.get("mm_processor_kwargs")
         self.mm_positions = inputs.get("mm_positions")
         # Output of the mm input mapper (e.g., image tensors).
-        self.mm_inputs: Optional[MultiModalInputs] = None
+        self.mm_inputs: List[MultiModalInputs] = []
 
     @property
     def num_tokens(self) -> int:
@@ -67,15 +67,19 @@ class Request:
         return RequestStatus.get_finished_reason(self.status)
 
     def has_encoder_inputs(self) -> bool:
-        return self.mm_positions is not None
+        return self.mm_data is not None
 
     @property
     def num_encoder_inputs(self) -> int:
+        # This method should be called only after the mm input mapper
+        # has been applied.
         if self.mm_positions is None:
             return 0
         return len(self.mm_positions)
 
     def get_num_encoder_tokens(self, input_id: int) -> int:
+        # This method should be called only after the mm input mapper
+        # has been applied.
         assert input_id < len(self.mm_positions)
         _, num_tokens = self.mm_positions[input_id]
         return num_tokens

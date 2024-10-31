@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 from unittest.mock import patch
 
 import numpy as np
@@ -82,6 +82,7 @@ class GPUModelRunner:
         # Lazy initialization
         # self.model: nn.Module  # Set after load_model
         self.kv_caches: List[torch.Tensor] = []
+        self.encoder_cache: Dict[str, Dict[int, torch.Tensor]] = {}
 
         # Request states.
         self.requests: Dict[str, CachedRequestState] = {}
@@ -141,12 +142,12 @@ class GPUModelRunner:
                 prompt_token_ids=req_data.prompt_token_ids,
                 prompt=req_data.prompt,
                 mm_inputs=req_data.mm_inputs,
+                mm_positions=req_data.mm_positions,
                 sampling_params=req_data.sampling_params,
                 generator=None,  # TODO
                 block_ids=req_data.block_ids,
                 num_computed_tokens=req_data.num_computed_tokens,
                 output_token_ids=[],
-                requires_encoder_processing=req_data.mm_inputs is not None,
             )
             req_ids_to_add.append(req_id)
 
@@ -199,17 +200,6 @@ class GPUModelRunner:
                                            num_tokens)
         num_scheduled_tokens = np.array(num_scheduled_tokens, dtype=np.int32)
         assert max_num_scheduled_tokens > 0
-
-        mm_inputs: List[MultiModalInputs] = []
-        for req_id in self.input_batch.req_ids[:num_reqs]:
-            req_state = self.requests[req_id]
-            if not req_state.requires_encoder_processing:
-                continue
-            mm_inputs.append(req_state.mm_inputs)
-            req_state.requires_encoder_processing = False
-        batched_mm_inputs = MultiModalInputs.batch(mm_inputs)
-        batched_mm_inputs = MultiModalInputs.as_kwargs(batched_mm_inputs,
-                                                       device=self.device)
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
@@ -300,8 +290,7 @@ class GPUModelRunner:
         # token from the partial request.
         # TODO: Support prompt logprobs.
         logits_indices = query_start_loc[1:] - 1
-        return (input_ids, positions, attn_metadata, batched_mm_inputs,
-                logits_indices)
+        return input_ids, positions, attn_metadata, logits_indices
 
     def _prepare_sampling(
         self,
@@ -318,23 +307,87 @@ class GPUModelRunner:
         sampling_metadata = self.input_batch.make_sampling_metadata(skip_copy)
         return sampling_metadata
 
+    def _excute_encoder(self, scheduler_output: "SchedulerOutput"):
+        scheduled_encoder_inputs = scheduler_output.scheduled_encoder_inputs
+        if not scheduled_encoder_inputs:
+            return
+
+        # Batch the multi-modal inputs.
+        mm_inputs: List[MultiModalInputs] = []
+        req_input_ids: List[Tuple[int, int]] = []
+        for req_id, encoder_input_ids in scheduled_encoder_inputs.items():
+            req_state = self.requests[req_id]
+            for input_id in encoder_input_ids:
+                mm_inputs.append(req_state.mm_inputs[input_id])
+                req_input_ids.append((req_id, input_id))
+        batched_mm_inputs = MultiModalInputs.batch(mm_inputs)
+        batched_mm_inputs = MultiModalInputs.as_kwargs(batched_mm_inputs,
+                                                       device=self.device)
+
+        # Run the encoder.
+        encoder_outputs = self.model.process_mm_inputs(**batched_mm_inputs)
+
+        # Cache the encoder outputs.
+        for (req_id, input_id), output in zip(req_input_ids, encoder_outputs):
+            if req_id not in self.encoder_cache:
+                self.encoder_cache[req_id] = {}
+            self.encoder_cache[req_id][input_id] = output
+
+    def _gather_encoder_outputs(
+        self,
+        scheduler_output: "SchedulerOutput",
+    ) -> List[torch.Tensor]:
+        encoder_outputs: List[torch.Tensor] = []
+        num_reqs = self.input_batch.num_reqs
+        for req_id in self.input_batch.req_ids[:num_reqs]:
+            num_scheduled_tokens = scheduler_output.num_scheduled_tokens[
+                req_id]
+            req_state = self.requests[req_id]
+            num_computed_tokens = req_state.num_computed_tokens
+            for i, (start_pos,
+                    num_encoder_tokens) in enumerate(req_state.mm_positions):
+                start_idx = max(num_computed_tokens - start_pos, 0)
+                end_idx = min(
+                    num_computed_tokens + num_scheduled_tokens - start_pos,
+                    num_encoder_tokens)
+                if start_idx >= end_idx:
+                    continue
+                assert req_id in self.encoder_cache
+                assert i in self.encoder_cache[req_id]
+                encoder_output = self.encoder_cache[req_id][i]
+                encoder_outputs.append(encoder_output[start_idx:end_idx])
+        return encoder_outputs
+
     @torch.inference_mode()
     def execute_model(
         self,
         scheduler_output: "SchedulerOutput",
     ) -> ModelRunnerOutput:
         self._update_states(scheduler_output)
-        inputs = self._prepare_inputs(scheduler_output)
-        (input_ids, positions, attn_metadata, batched_mm_inputs,
-         logits_indices) = inputs
 
+        # Run the encoder.
+        self._excute_encoder(scheduler_output)
+        encoder_outputs = self._gather_encoder_outputs(scheduler_output)
+
+        # Prepare the decoder inputs.
+        inputs = self._prepare_inputs(scheduler_output)
+        input_ids, positions, attn_metadata, logits_indices = inputs
+
+        if encoder_outputs:
+            inputs_embeds = self.model.get_inputs_embeds(
+                input_ids, encoder_outputs)
+            kwargs = {"inputs_embeds": inputs_embeds}
+        else:
+            kwargs = {}
+
+        # Run the decoder.
         with set_forward_context(attn_metadata):
             hidden_states = self.model(
                 input_ids=input_ids,
                 positions=positions,
                 kv_caches=self.kv_caches,
                 attn_metadata=attn_metadata,
-                **batched_mm_inputs,
+                **kwargs,
             )
         hidden_states = hidden_states[logits_indices]
         logits = self.model.compute_logits(hidden_states, None)
@@ -443,16 +496,14 @@ class CachedRequestState:
     req_id: str
     prompt_token_ids: List[int]
     prompt: Optional[str]
-    mm_inputs: Optional[MultiModalInputs]
+    mm_inputs: List[MultiModalInputs]
+    mm_positions: List[Tuple[int, int]]
     sampling_params: SamplingParams
     generator: Optional[torch.Generator]
 
     block_ids: List[int]
     num_computed_tokens: int
     output_token_ids: List[int]
-
-    requires_encoder_processing: bool
-    # encoder_outputs: Any
 
     @property
     def num_tokens(self) -> int:

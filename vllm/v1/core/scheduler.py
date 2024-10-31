@@ -6,8 +6,8 @@ from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.logger import init_logger
 from vllm.multimodal import MultiModalInputs
 from vllm.sampling_params import SamplingParams
-from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
+from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 
@@ -454,7 +454,8 @@ class NewRequestData:
     req_id: str
     prompt_token_ids: List[int]
     prompt: Optional[str]
-    mm_inputs: Optional[MultiModalInputs]
+    mm_inputs: List[MultiModalInputs]
+    mm_positions: Optional[List[Tuple[int, int]]]
     sampling_params: SamplingParams
     block_ids: List[int]
     num_computed_tokens: int
@@ -471,6 +472,7 @@ class NewRequestData:
             prompt_token_ids=request.inputs["prompt_token_ids"],
             prompt=request.inputs.get("prompt"),
             mm_inputs=request.mm_inputs,
+            mm_positions=request.mm_positions,
             sampling_params=request.sampling_params,
             block_ids=block_ids,
             num_computed_tokens=num_computed_tokens,
