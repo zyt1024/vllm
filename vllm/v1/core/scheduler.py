@@ -456,7 +456,7 @@ class NewRequestData:
     prompt_token_ids: List[int]
     prompt: Optional[str]
     mm_inputs: List[MultiModalInputs]
-    mm_positions: Optional[List[Tuple[int, int]]]
+    mm_positions: List[Tuple[int, int]]
     sampling_params: SamplingParams
     block_ids: List[int]
     num_computed_tokens: int
@@ -470,8 +470,8 @@ class NewRequestData:
     ) -> "NewRequestData":
         return cls(
             req_id=request.request_id,
-            prompt_token_ids=request.inputs["prompt_token_ids"],
-            prompt=request.inputs.get("prompt"),
+            prompt_token_ids=request.prompt_token_ids,
+            prompt=request.prompt,
             mm_inputs=request.mm_inputs,
             mm_positions=request.mm_positions,
             sampling_params=request.sampling_params,

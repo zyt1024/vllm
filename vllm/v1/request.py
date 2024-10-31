@@ -48,7 +48,7 @@ class Request:
         # Raw multimodal data before the mm input mapper (e.g., PIL images).
         self.mm_data = inputs.get("multi_modal_data")
         self.mm_processor_kwargs = inputs.get("mm_processor_kwargs")
-        self.mm_positions = inputs.get("mm_positions")
+        self.mm_positions = inputs.get("mm_positions") or []
         # Output of the mm input mapper (e.g., image tensors).
         self.mm_inputs: List[MultiModalInputs] = []
 
@@ -73,8 +73,6 @@ class Request:
     def num_encoder_inputs(self) -> int:
         # This method should be called only after the mm input mapper
         # has been applied.
-        if self.mm_positions is None:
-            return 0
         return len(self.mm_positions)
 
     def get_num_encoder_tokens(self, input_id: int) -> int:
