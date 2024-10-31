@@ -100,6 +100,7 @@ class GPUModelRunner:
         # Keep the states of the pre-empted requests.
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
+            self.encoder_cache.pop(req_id, None)
 
         # Remove the requests from the persistent batch.
         stopped_req_ids = set().union(
