@@ -268,6 +268,7 @@ class Scheduler:
             # It contains the request IDs that are finished in between
             # the previous and the current steps.
             finished_req_ids=self.finished_req_ids,
+            free_encoder_input_ids=self.encoder_cache_manager.get_freed_ids(),
         )
 
         self.finished_req_ids = set()
@@ -534,3 +535,4 @@ class SchedulerOutput:
 
     preempted_req_ids: Set[str]
     finished_req_ids: Set[str]
+    free_encoder_input_ids: Set[Tuple[str, int]]

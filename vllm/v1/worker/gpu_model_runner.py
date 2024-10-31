@@ -102,6 +102,14 @@ class GPUModelRunner:
             self.requests.pop(req_id, None)
             self.encoder_cache.pop(req_id, None)
 
+        # Free the cached encoder outputs.
+        for req_id, input_id in scheduler_output.free_encoder_input_ids:
+            encoder_outputs = self.encoder_cache.get(req_id)
+            if encoder_outputs is not None:
+                encoder_outputs.pop(input_id, None)
+                if not encoder_outputs:
+                    self.encoder_cache.pop(req_id, None)
+
         # Remove the requests from the persistent batch.
         stopped_req_ids = set().union(
             scheduler_output.preempted_req_ids,
@@ -357,6 +365,7 @@ class GPUModelRunner:
                 assert i in self.encoder_cache[req_id]
                 encoder_output = self.encoder_cache[req_id][i]
                 encoder_outputs.append(encoder_output[start_idx:end_idx])
+                print(start_idx, end_idx)
         return encoder_outputs
 
     @torch.inference_mode()
