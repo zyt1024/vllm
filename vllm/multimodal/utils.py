@@ -258,7 +258,7 @@ def repeat_and_pad_placeholder_tokens(
     repeat_count: Union[int, List[int]],
     pad_token_left: Optional[int] = None,
     pad_token_right: Optional[int] = None,
-) -> Tuple[Optional[str], List[int]]:
+) -> Tuple[Optional[str], List[int], List[Tuple[int, int]]]:
     if isinstance(repeat_count, int):
         repeat_count = [repeat_count]
 

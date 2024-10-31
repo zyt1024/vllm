@@ -16,6 +16,7 @@ from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
+from vllm.multimodal.base import NestedTensors
 from vllm.sequence import IntermediateTensors
 from vllm.utils import is_list_of
 
@@ -448,6 +449,26 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
         image_features = self._process_image_pixels(image_input)
         return self.multi_modal_projector(image_features)
 
+    def process_mm_inputs(self, **kwargs):
+        image_input = self._parse_and_validate_image_input(**kwargs)
+        if image_input is None:
+            return None
+        vision_embeddings = self._process_image_input(image_input)
+        return vision_embeddings
+
+    def get_inputs_embeds(
+        self,
+        input_ids: torch.Tensor,
+        vision_embeddings: Optional[NestedTensors],
+    ) -> torch.Tensor:
+        inputs_embeds = self.language_model.model.get_input_embeddings(
+            input_ids)
+        if vision_embeddings is not None:
+            inputs_embeds = merge_multimodal_embeddings(
+                input_ids, inputs_embeds, vision_embeddings,
+                self.config.image_token_index)
+        return inputs_embeds
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -455,6 +476,7 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
         intermediate_tensors: Optional[IntermediateTensors] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: object,
     ) -> Union[torch.Tensor, IntermediateTensors]:
         """Run forward pass for LLaVA-1.5.
@@ -495,22 +517,12 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
         if intermediate_tensors is not None:
             input_ids = None
             inputs_embeds = None
-        else:
+        elif inputs_embeds is None:
+            vision_embeddings = self.process_mm_inputs(**kwargs)
             # always pass the input via `inputs_embeds`
             # to make sure the computation graph is consistent
-            image_input = self._parse_and_validate_image_input(**kwargs)
-
-            if image_input is not None:
-                vision_embeddings = self._process_image_input(image_input)
-                inputs_embeds = self.language_model.model.get_input_embeddings(
-                    input_ids)
-
-                inputs_embeds = merge_multimodal_embeddings(
-                    input_ids, inputs_embeds, vision_embeddings,
-                    self.config.image_token_index)
-            else:
-                inputs_embeds = self.language_model.model.get_input_embeddings(
-                    input_ids)
+            inputs_embeds = self.get_inputs_embeds(input_ids,
+                                                   vision_embeddings)
             input_ids = None
 
         hidden_states = self.language_model.model(input_ids,
