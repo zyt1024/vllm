@@ -151,12 +151,6 @@ class Scheduler:
                     encoder_budget -= request.get_num_encoder_tokens(i)
                     self.encoder_cache_manager.allocate(request, i)
 
-                # If there is a remaining encoder input for the request,
-                # do not schedule any more request.
-                if (encoder_inputs_to_schedule[-1] <
-                        request.num_encoder_inputs - 1):
-                    break
-
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
             while self.waiting:
@@ -223,11 +217,8 @@ class Scheduler:
                         encoder_budget -= request.get_num_encoder_tokens(i)
                         self.encoder_cache_manager.allocate(request, i)
 
-                    # If there is a remaining encoder input for the request,
-                    # do not schedule any more request.
-                    if (encoder_inputs_to_schedule[-1] <
-                            request.num_encoder_inputs - 1):
-                        break
+                if num_computed_tokens + num_new_tokens < request.num_tokens:
+                    break
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
