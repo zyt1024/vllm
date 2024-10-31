@@ -345,8 +345,8 @@ class GPUModelRunner:
                 req_id]
             req_state = self.requests[req_id]
             num_computed_tokens = req_state.num_computed_tokens
-            for i, (start_pos,
-                    num_encoder_tokens) in enumerate(req_state.mm_positions):
+            mm_positions = req_state.mm_positions
+            for i, (start_pos, num_encoder_tokens) in enumerate(mm_positions):
                 start_idx = max(num_computed_tokens - start_pos, 0)
                 end_idx = min(
                     num_computed_tokens + num_scheduled_tokens - start_pos,
