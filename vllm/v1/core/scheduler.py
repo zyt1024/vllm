@@ -318,20 +318,18 @@ class Scheduler:
             if self.encoder_cache_manager.has_cache(request, i):
                 # The encoder input is already computed and cached.
                 continue
-
             if not self.encoder_cache_manager.can_allocate(request, i):
-                # The encoder cache is full.
-                continue
-
-            if num_encoder_tokens <= encoder_budget:
-                encoder_budget -= num_encoder_tokens
-            else:
-                # The encoder input cannot be scheduled in this step
-                # because the encoder budget is exhausted.
+                # Cannot schedule because the encoder cache is full.
+                num_new_tokens = start_pos - num_computed_tokens
+                break
+            if num_encoder_tokens > encoder_budget:
+                # Cannot schedule because the encoder budget is exhausted.
                 # NOTE(woosuk): We assume that the encoder tokens should be
                 # processed altogether, as the model usually uses the
                 num_new_tokens = start_pos - num_computed_tokens
                 break
+
+            encoder_budget -= num_encoder_tokens
             encoder_inputs_to_schedule.append(i)
         return encoder_inputs_to_schedule, num_new_tokens
 
