@@ -365,7 +365,6 @@ class GPUModelRunner:
                 assert i in self.encoder_cache[req_id]
                 encoder_output = self.encoder_cache[req_id][i]
                 encoder_outputs.append(encoder_output[start_idx:end_idx])
-                print(start_idx, end_idx)
         return encoder_outputs
 
     @torch.inference_mode()
