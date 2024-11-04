@@ -1,15 +1,19 @@
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import (TYPE_CHECKING, Deque, Dict, Iterable, List, Optional, Set,
+                    Tuple, Union)
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
 from vllm.logger import init_logger
-from vllm.multimodal import MultiModalInputs
 from vllm.sampling_params import SamplingParams
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
+
+if TYPE_CHECKING:
+    from vllm.multimodal import MultiModalInputs
+    from vllm.multimodal.base import PlaceholderRange
 
 logger = init_logger(__name__)
 
@@ -304,7 +308,10 @@ class Scheduler:
         mm_positions = request.mm_positions
         assert mm_positions is not None
         assert len(mm_positions) > 0
-        for i, (start_pos, num_encoder_tokens) in enumerate(mm_positions):
+        for i, pos_info in enumerate(mm_positions):
+            start_pos = pos_info["offset"]
+            num_encoder_tokens = pos_info["length"]
+
             if start_pos >= num_computed_tokens + num_new_tokens:
                 # The encoder input is not needed in this step.
                 break
@@ -353,7 +360,8 @@ class Scheduler:
             cached_encoder_input_ids = (
                 self.encoder_cache_manager.get_cached_input_ids(request))
             for input_id in list(cached_encoder_input_ids):
-                start_pos, num_tokens = request.mm_positions[input_id]
+                start_pos = request.mm_positions[input_id]["offset"]
+                num_tokens = request.mm_positions[input_id]["length"]
                 if start_pos + num_tokens <= request.num_computed_tokens:
                     # The encoder input is already computed and stored
                     # in the decoder's KV cache.
@@ -451,8 +459,8 @@ class NewRequestData:
     req_id: str
     prompt_token_ids: List[int]
     prompt: Optional[str]
-    mm_inputs: List[MultiModalInputs]
-    mm_positions: List[Tuple[int, int]]
+    mm_inputs: List["MultiModalInputs"]
+    mm_positions: List["PlaceholderRange"]
     sampling_params: SamplingParams
     block_ids: List[int]
     num_computed_tokens: int
@@ -531,4 +539,4 @@ class SchedulerOutput:
 
     preempted_req_ids: Set[str]
     finished_req_ids: Set[str]
-    free_encoder_input_ids: Set[Tuple[str, int]]
+    free_encoder_input_ids: List[Tuple[str, int]]

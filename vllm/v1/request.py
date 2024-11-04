@@ -48,7 +48,10 @@ class Request:
         # Raw multimodal data before the mm input mapper (e.g., PIL images).
         self.mm_data = inputs.get("multi_modal_data")
         self.mm_processor_kwargs = inputs.get("mm_processor_kwargs")
-        self.mm_positions = inputs.get("mm_positions") or []
+        mm_positions = inputs.get("multi_modal_placeholders", {})
+        # FIXME(woosuk): Support other modalities.
+        self.mm_positions = mm_positions.get("image", [])
+
         # Output of the mm input mapper (e.g., image tensors).
         self.mm_inputs: List[MultiModalInputs] = []
 
@@ -79,7 +82,7 @@ class Request:
         # This method should be called only after the mm input mapper
         # has been applied.
         assert input_id < len(self.mm_positions)
-        _, num_tokens = self.mm_positions[input_id]
+        num_tokens = self.mm_positions[input_id]["length"]
         return num_tokens
 
 

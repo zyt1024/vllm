@@ -8,9 +8,10 @@ class EncoderCacheManager:
     def __init__(self, cache_size: int):
         self.cache_size = cache_size
         self.num_free_slots = cache_size
-        # req_id -> cached input indices
+        # req_id -> cached input ids
         self.cached: Dict[str, Set[int]] = {}
-        self.freed: List[Tuple[int, int]] = []
+        # List of [req_id, input_id]
+        self.freed: List[Tuple[str, int]] = []
 
     def has_cache(self, request: Request, input_id: int) -> bool:
         req_id = request.request_id
@@ -41,7 +42,7 @@ class EncoderCacheManager:
         self.num_free_slots += request.get_num_encoder_tokens(input_id)
         self.freed.append((req_id, input_id))
 
-    def get_freed_ids(self) -> Dict[str, Set[int]]:
+    def get_freed_ids(self) -> List[Tuple[str, int]]:
         freed = self.freed
         self.freed = []
         return freed

@@ -24,6 +24,7 @@ from vllm.v1.sample.sampler import Sampler
 
 if TYPE_CHECKING:
     from vllm.v1.core.scheduler import SchedulerOutput
+    from vllm.multimodal.base import PlaceholderRange
 
 logger = init_logger(__name__)
 
@@ -78,6 +79,7 @@ class GPUModelRunner:
         # Lazy initialization
         # self.model: nn.Module  # Set after load_model
         self.kv_caches: List[torch.Tensor] = []
+        # req_id -> (input_id -> encoder_output)
         self.encoder_cache: Dict[str, Dict[int, torch.Tensor]] = {}
 
         # Request states.
@@ -357,7 +359,10 @@ class GPUModelRunner:
             req_state = self.requests[req_id]
             num_computed_tokens = req_state.num_computed_tokens
             mm_positions = req_state.mm_positions
-            for i, (start_pos, num_encoder_tokens) in enumerate(mm_positions):
+            for i, pos_info in enumerate(mm_positions):
+                start_pos = pos_info["offset"]
+                num_encoder_tokens = pos_info["length"]
+
                 start_idx = max(num_computed_tokens - start_pos, 0)
                 end_idx = min(
                     num_computed_tokens + num_scheduled_tokens - start_pos,
@@ -501,7 +506,7 @@ class CachedRequestState:
     prompt_token_ids: List[int]
     prompt: Optional[str]
     mm_inputs: List[MultiModalInputs]
-    mm_positions: List[Tuple[int, int]]
+    mm_positions: List["PlaceholderRange"]
     sampling_params: SamplingParams
     generator: Optional[torch.Generator]
 
