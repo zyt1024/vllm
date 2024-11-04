@@ -321,7 +321,7 @@ class GPUModelRunner:
         sampling_metadata = self.input_batch.make_sampling_metadata(skip_copy)
         return sampling_metadata
 
-    def _excute_encoder(self, scheduler_output: "SchedulerOutput"):
+    def _execute_encoder(self, scheduler_output: "SchedulerOutput"):
         scheduled_encoder_inputs = scheduler_output.scheduled_encoder_inputs
         if not scheduled_encoder_inputs:
             return
@@ -383,7 +383,7 @@ class GPUModelRunner:
         self._update_states(scheduler_output)
 
         # Run the encoder.
-        self._excute_encoder(scheduler_output)
+        self._execute_encoder(scheduler_output)
         encoder_outputs = self._gather_encoder_outputs(scheduler_output)
 
         # Prepare the decoder inputs.
