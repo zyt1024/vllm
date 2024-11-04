@@ -33,6 +33,7 @@ class GPUModelRunner:
     def __init__(
         self,
         vllm_config: VllmConfig,
+        input_registry: InputRegistry = INPUT_REGISTRY,
     ):
         # TODO: use ModelRunnerBase.__init__(self, vllm_config=vllm_config)
         self.vllm_config = vllm_config
