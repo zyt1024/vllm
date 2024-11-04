@@ -10,7 +10,8 @@ from transformers import (CLIPVisionConfig, LlavaConfig, PixtralVisionConfig,
 
 from vllm.attention import AttentionMetadata
 from vllm.config import CacheConfig, MultiModalConfig
-from vllm.inputs import INPUT_REGISTRY, DecoderOnlyInputs, InputContext
+from vllm.inputs import (INPUT_REGISTRY, DecoderOnlyInputs, DummyData,
+                         InputContext)
 from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
@@ -112,7 +113,7 @@ def dummy_data_for_llava(ctx: InputContext, seq_len: int,
     image_feature_size = get_max_llava_image_tokens(ctx)
 
     if isinstance(vision_config, CLIPVisionConfig):
-        seq_data = dummy_seq_data_for_clip(
+        seq_data, ranges = dummy_seq_data_for_clip(
             vision_config,
             seq_len,
             num_images,
@@ -121,9 +122,9 @@ def dummy_data_for_llava(ctx: InputContext, seq_len: int,
         )
 
         mm_data = dummy_image_for_clip(vision_config, num_images)
-        return seq_data, mm_data
+        return DummyData(seq_data, mm_data, ranges)
     elif isinstance(vision_config, SiglipVisionConfig):
-        seq_data = dummy_seq_data_for_siglip(
+        seq_data, ranges = dummy_seq_data_for_siglip(
             vision_config,
             seq_len,
             num_images,
@@ -132,9 +133,9 @@ def dummy_data_for_llava(ctx: InputContext, seq_len: int,
         )
 
         mm_data = dummy_image_for_siglip(vision_config, num_images)
-        return seq_data, mm_data
+        return DummyData(seq_data, mm_data, ranges)
     elif isinstance(vision_config, PixtralVisionConfig):
-        seq_data = dummy_seq_data_for_pixtral_hf(
+        seq_data, ranges = dummy_seq_data_for_pixtral_hf(
             vision_config,
             seq_len,
             num_images,
@@ -143,7 +144,7 @@ def dummy_data_for_llava(ctx: InputContext, seq_len: int,
         )
 
         mm_data = dummy_image_for_pixtral_hf(vision_config, num_images)
-        return seq_data, mm_data
+        return DummyData(seq_data, mm_data, ranges)
 
     msg = f"Unsupported vision config: {type(vision_config)}"
     raise NotImplementedError(msg)
@@ -515,15 +516,25 @@ class LlavaForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
             :class:`LlavaImageInputs`
         """
         if intermediate_tensors is not None:
-            input_ids = None
             inputs_embeds = None
-        elif inputs_embeds is None:
-            vision_embeddings = self.process_mm_inputs(**kwargs)
-            # always pass the input via `inputs_embeds`
-            # to make sure the computation graph is consistent
-            inputs_embeds = self.get_inputs_embeds(input_ids,
-                                                   vision_embeddings)
-            input_ids = None
+        else:
+            image_input = self._parse_and_validate_image_input(**kwargs)
+            if image_input is not None:
+                vision_embeddings = self._process_image_input(image_input)
+                inputs_embeds = self.language_model.model.get_input_embeddings(
+                    input_ids)
+
+                inputs_embeds = merge_multimodal_embeddings(
+                    input_ids, inputs_embeds, vision_embeddings,
+                    self.config.image_token_index)
+            else:
+                inputs_embeds = self.language_model.model.get_input_embeddings(
+                    input_ids)
+
+        # always pass the input via `inputs_embeds`
+        # to make sure the computation graph is consistent
+        # for `torch.compile` integration
+        input_ids = None
 
         hidden_states = self.language_model.model(input_ids,
                                                   positions,
