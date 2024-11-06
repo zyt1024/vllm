@@ -66,9 +66,9 @@ class Scheduler:
         self.running_reqs_data: Dict[str, RunningRequestData] = {}
 
         # Encoder-related.
-        # NOTE(woosuk): Here, "encoder" includes the vision encoder. Currently,
-        # we assume that the encoder also has the Transformer architecture
-        # (e.g., ViT).
+        # NOTE(woosuk): Here, "encoder" includes the vision encoder (and
+        # projector if needed). Currently, we assume that the encoder also
+        # has the Transformer architecture (e.g., ViT).
         # FIXME(woosuk): Below are placeholder values. We need to calculate the
         # actual values from the configurations.
         self.max_num_encoder_input_tokens = 2048
