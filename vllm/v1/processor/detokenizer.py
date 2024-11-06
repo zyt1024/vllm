@@ -42,13 +42,14 @@ class DetokenizerOutputs(msgspec.Struct):
 
 class Detokenizer:
 
-    def __init__(self, tokenizer_name: str):
+    def __init__(self, tokenizer_name: str, *args, **kwargs):
         # FIXME(woosuk): Currently, the detokenizer is just a hacky prototype.
         # For example, it does not terminate properly. We need to improve this.
         self.push_port = get_open_port()
         self.pull_port = get_open_port()
-        self.detokenizer = DetokenizerProc(tokenizer_name, self.push_port,
-                                           self.pull_port)
+        self.detokenizer = DetokenizerProc(
+            self.push_port, self.pull_port, tokenizer_name,
+            *args, **kwargs)
         self.detokenizer.start()
 
         self.zmq_context = zmq.Context()
@@ -81,23 +82,28 @@ class DetokenizerProc(multiprocessing.Process):
 
     def __init__(
         self,
-        tokenizer_name: str,
         pull_port: int,
         push_port: int,
+        tokenizer_name: str,
+        *args,
+        **kwargs,
     ):
         super().__init__()
-        self.tokenizer_name = tokenizer_name
         # NOTE: The pull_port of the detokenizer should be the same as the
         # push_port of the engine. Vice versa.
         self.pull_port = pull_port
         self.push_port = push_port
+        self.tokenizer_name = tokenizer_name
+        self.args = args
+        self.kwargs = kwargs
 
     def run(self):
         # Initialize these objects after the process is forked since they are
         # not picklable.
         self.msgpack_encoder = msgpack.Encoder()
         self.msgpack_decoder = msgpack.Decoder(DetokenizerInputs)
-        self.tokenizer = get_tokenizer(self.tokenizer_name)
+        self.tokenizer = get_tokenizer(self.tokenizer_name, *self.args,
+                                       **self.kwargs)
         # req_id -> RequestState
         self.request_states: Dict[str, RequestState] = {}
 
