@@ -22,10 +22,13 @@ class MMInputMapper:
         mm_data: MultiModalDataDict,
         mm_processor_kwargs: Optional[Dict[str, Any]],
     ) -> List[MultiModalInputs]:
-        mm_inputs: List[MultiModalInputs] = []
         image_inputs = mm_data["image"]
         if not isinstance(image_inputs, list):
             image_inputs = [image_inputs]
+
+        # Process each image input separately so that later we can schedule
+        # them in a fine-grained manner.
+        mm_inputs: List[MultiModalInputs] = []
         num_images = len(image_inputs)
         for i in range(num_images):
             mm_input = self.multi_modal_input_mapper(
