@@ -23,8 +23,7 @@ from vllm.usage.usage_lib import UsageContext
 from vllm.v1.core.scheduler import Scheduler
 from vllm.v1.executor.gpu_executor import GPUExecutor
 from vllm.v1.processor.detokenizer import Detokenizer, DetokenizerInputs
-from vllm.v1.processor.mm_input_mapper import (MMInputMapper,
-                                               MMInputMapperInputs)
+from vllm.v1.processor.mm_input_mapper import MMInputMapper
 from vllm.v1.request import Request, RequestStatus
 from vllm.version import __version__ as VLLM_VERSION
 
@@ -247,9 +246,6 @@ class LLMEngine:
         self.requests[request_id] = req
         self.num_lagged_steps[request_id] = 0
 
-        # NOTE(woosuk): Here, we do not strictly follow the FCFS policy,
-        # as the text-only requests that arrive later can be scheduled
-        # before the multimodal requests that arrived earlier.
         if req.mm_data is None:
             # No multi-modal data for this request.
             self.scheduler.add_request(req)
@@ -260,7 +256,9 @@ class LLMEngine:
             # The request needs to be processed by the mm input mapper before
             # being scheduled.
             assert self.mm_input_mapper is not None
-            self.send_to_mm_input_mapper([req])
+            req.mm_inputs = self.mm_input_mapper.process_inputs(
+                req.mm_data, req.mm_processor_kwargs)
+            self.scheduler.add_request(req)
 
     def stop_remote_worker_execution_loop(self) -> None:
         raise NotImplementedError("TP not implemented yet.")
@@ -321,8 +319,6 @@ class LLMEngine:
         # FIXME(woosuk): Currently, the step method is inefficient because it
         # creates RequestOutput objects for all running requests, while they
         # may not be needed unless the output is streamed to the client.
-
-        self.recv_from_mm_input_mapper()
         if self.scheduler.has_unfinished_requests():
             scheduler_output = self.scheduler.schedule()
             output = self.model_executor.execute_model(scheduler_output)
@@ -449,33 +445,6 @@ class LLMEngine:
             completion_output.stop_reason = request.stop_reason
             req_output.finished = finished
         return req_output
-
-    def send_to_mm_input_mapper(self, requests: List[Request]) -> None:
-        if self.mm_input_mapper is None:
-            return
-        mm_mapper_input = MMInputMapperInputs.from_requests(requests)
-        self.mm_input_mapper.send(mm_mapper_input)
-
-    def recv_from_mm_input_mapper(self) -> None:
-        if self.mm_input_mapper is None:
-            return
-
-        while True:
-            output = self.mm_input_mapper.recv()
-            if output is None:
-                break
-
-            num_reqs = len(output.req_ids)
-            for i in range(num_reqs):
-                req_id = output.req_ids[i]
-                if req_id not in self.requests:
-                    # The request has been aborted while the MM input mapper was
-                    # processing the inputs.
-                    continue
-
-                req = self.requests[req_id]
-                req.mm_inputs = output.mm_inputs[i]
-                self.scheduler.add_request(req)
 
     def _free_request(self, request_id: str) -> None:
         self.requests.pop(request_id, None)
