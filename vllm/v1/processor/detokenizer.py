@@ -47,9 +47,8 @@ class Detokenizer:
         # For example, it does not terminate properly. We need to improve this.
         self.push_port = get_open_port()
         self.pull_port = get_open_port()
-        self.detokenizer = DetokenizerProc(
-            self.push_port, self.pull_port, tokenizer_name,
-            *args, **kwargs)
+        self.detokenizer = DetokenizerProc(self.push_port, self.pull_port,
+                                           tokenizer_name, *args, **kwargs)
         self.detokenizer.start()
 
         self.zmq_context = zmq.Context()
