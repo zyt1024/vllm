@@ -330,7 +330,8 @@ class Scheduler:
             if num_encoder_tokens > encoder_budget:
                 # Cannot schedule because the encoder budget is exhausted.
                 # NOTE(woosuk): We assume that the encoder tokens should be
-                # processed altogether, as the model usually uses the
+                # processed altogether, as the encoder usually uses
+                # bidirectional attention.
                 num_new_tokens = start_pos - num_computed_tokens
                 break
 
