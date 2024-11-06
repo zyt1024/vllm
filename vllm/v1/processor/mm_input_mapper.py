@@ -59,20 +59,19 @@ class MMInputMapperImpl(ProcessorImpl):
         mm_inputs: List[List[MultiModalInputs]] = []
         num_reqs = len(inputs.req_ids)
         for i in range(num_reqs):
+            mm_inputs.append([])
             if inputs.mm_data[i] is None:
                 # No multi-modal input for this request.
-                mm_inputs.append([])
                 continue
 
-            mm_input = self.multi_modal_input_mapper(
-                inputs.mm_data[i],
-                mm_processor_kwargs=inputs.mm_processor_kwargs[i],
-            )
-            num_inputs = 0
-            for v in inputs.mm_data[i].values():
-                if isinstance(v, list):
-                    num_inputs += len(v)
-                else:
-                    num_inputs += 1
-            mm_inputs.append(MultiModalInputs.unbatch(mm_input, num_inputs))
+            image_inputs = inputs.mm_data[i]["image"]
+            num_images = (len(image_inputs)
+                          if isinstance(image_inputs, list) else 1)
+            for j in range(num_images):
+                image = [image_inputs[j]] if num_images > 1 else image_inputs
+                mm_input = self.multi_modal_input_mapper(
+                    {"image": image},
+                    mm_processor_kwargs=inputs.mm_processor_kwargs[i],
+                )
+                mm_inputs[i].append(mm_input)
         return MMInputMapperOutputs(inputs.req_ids, mm_inputs)
